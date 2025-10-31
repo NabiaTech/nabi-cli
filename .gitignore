@@ -1,0 +1,17 @@
+# Build artifacts (should be in XDG cache, but just in case)
+/target/
+**/*.rs.bk
+*.pdb
+
+# Generated cargo config (use .cargo/config.toml.template instead)
+.cargo/config.toml
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store

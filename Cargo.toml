@@ -1,0 +1,30 @@
+[package]
+name = "nabi"
+version = "0.1.0"
+edition = "2021"
+authors = ["Nabia Federation <federation@nabia.ai>"]
+description = "Unified federation command gateway - router to specialized commanders"
+license = "MIT"
+
+[dependencies]
+ clap = { version = "4.5", features = ["derive", "cargo", "env"] }
+ clap_complete = "4.5"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+anyhow = "1.0"
+colored = "2.0"
+dirs = "5.0"
+tokio = { version = "1.0", features = ["full"] }
+tempfile = "3.0"
+chrono = { version = "0.4", features = ["serde"] }
+regex = "1.10"
+walkdir = "2.4"
+sha2 = "0.10"
+toml = { version = "0.8", features = ["preserve_order"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+opt-level = "z"  # Optimize for size

@@ -1,0 +1,8 @@
+[build]
+# XDG-compliant build artifact location
+# This file is generated from .cargo/config.toml.template
+# Run: make config (or manually substitute $XDG_CACHE_HOME)
+target-dir = "$XDG_CACHE_HOME/nabi/nabi-cli/target"
+
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "link-arg=-undefined", "-C", "link-arg=dynamic_lookup"]
