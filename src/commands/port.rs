@@ -497,7 +497,7 @@ pub fn cmd_cross_platform() -> Result<()> {
 
 /// Safely migrate service to new port
 pub fn cmd_shift(service: &str, old_port: u16, new_port: u16, dry_run: bool) -> Result<()> {
-    let registry = load_registry()?;
+    let mut registry = load_registry()?;
     let platform = detect_platform();
 
     println!("{}", "=".repeat(70));
@@ -509,45 +509,110 @@ pub fn cmd_shift(service: &str, old_port: u16, new_port: u16, dry_run: bool) -> 
     println!("Platform: {}", platform);
     println!("Mode: {}", if dry_run { "DRY RUN" } else { "EXECUTE" });
 
-    // Verify service exists
-    let config = registry.platform_configs.get(&platform)
+    // Verify service exists with proper fallback:
+    // 1. Try platform_configs first (platform-specific override)
+    // 2. Fall back to standard_allocations (global default)
+    let config = registry.platform_configs.get_mut(&platform)
         .ok_or_else(|| anyhow::anyhow!("Platform '{}' not found", platform))?;
 
-    let service_spec = config.services.get(service)
-        .ok_or_else(|| anyhow::anyhow!("Service '{}' not found on platform '{}'", service, platform))?;
+    let service_spec = if let Some(spec) = config.services.get(service) {
+        // Found in platform_configs
+        println!("\n✓ Service found in platform config");
+        Some(spec.clone())
+    } else if let Some(_std_alloc) = registry.standard_allocations.get(service) {
+        // Fall back to standard allocation
+        println!("\n⚠ Service not in platform config, using standard allocation");
+        println!("   Consider adding to platform_configs for platform-specific settings");
+        None
+    } else {
+        anyhow::bail!("Service '{}' not found in platform '{}' or standard allocations", service, platform);
+    };
 
     // Check current port matches
-    if let Some(current_port) = service_spec.port {
-        if current_port != old_port {
-            anyhow::bail!("Current port mismatch: service is on {}, not {}", current_port, old_port);
+    if let Some(spec) = &service_spec {
+        if let Some(current_port) = spec.port {
+            if current_port != old_port {
+                anyhow::bail!("Current port mismatch: service is on {}, not {}", current_port, old_port);
+            }
+        }
+    } else if let Some(std_alloc) = registry.standard_allocations.get(service) {
+        if let Some(current_port) = std_alloc.port {
+            if current_port != old_port {
+                anyhow::bail!("Current port mismatch: service is on {}, not {}", current_port, old_port);
+            }
         }
     }
 
-    println!("\n{}", "Steps:".bold());
+    println!("\n{}", "Planned Steps:".bold());
     println!("1. Stop service: {}", service);
-    if let Some(container) = &service_spec.container_name {
-        println!("   docker stop {}", container);
+    if let Some(spec) = &service_spec {
+        if let Some(container) = &spec.container_name {
+            println!("   docker stop {}", container);
+        }
     }
 
     println!("2. Update port-registry.json");
     println!("   {} → {}", old_port, new_port);
 
     println!("3. Update configuration files");
-    if let Some(compose) = &service_spec.compose_file {
-        println!("   Update: {}", compose);
+    if let Some(spec) = &service_spec {
+        if let Some(compose) = &spec.compose_file {
+            println!("   Update: {}", compose);
+        }
     }
 
     println!("4. Restart service");
-    if let Some(container) = &service_spec.container_name {
-        println!("   docker start {}", container);
+    if let Some(spec) = &service_spec {
+        if let Some(container) = &spec.container_name {
+            println!("   docker start {}", container);
+        }
     }
 
     println!("5. Verify health check on new port");
 
-    if dry_run {
-        println!("\n{}", "DRY RUN - No changes made".yellow().bold());
+    if !dry_run {
+        // EXECUTE: Actually perform the migration
+        println!("\n{}", "Executing migration...".bold());
+
+        // Update port-registry.json with new port for this platform
+        if let Some(service_spec_mut) = config.services.get_mut(service) {
+            service_spec_mut.port = Some(new_port);
+            println!("✓ Updated port in platform config: {} → {}", old_port, new_port);
+        } else {
+            // Create new service spec entry for this platform from standard allocation
+            if let Some(std_alloc) = registry.standard_allocations.get(service) {
+                let new_spec = ServiceSpec {
+                    enabled: true,
+                    port: Some(new_port),
+                    container_port: std_alloc.container_port,
+                    ports: std_alloc.ports.clone(),
+                    endpoint: None,
+                    compose_file: None,
+                    container_name: None,
+                    note: Some(format!("Platform-specific override: port {} → {}", old_port, new_port)),
+                };
+                config.services.insert(service.to_string(), new_spec);
+                println!("✓ Created platform-specific entry for {}: port {}", service, new_port);
+            }
+        }
+
+        // Save updated registry
+        let registry_path = get_registry_path()?;
+        let json = serde_json::to_string_pretty(&registry)
+            .context("Failed to serialize updated registry")?;
+        fs::write(&registry_path, json)
+            .context("Failed to write updated registry")?;
+        println!("✓ Saved registry to {}", registry_path.display());
+
+        println!("\n{}", "Migration complete!".green().bold());
+        println!("Next steps:");
+        println!("1. Update docker-compose files to use new port");
+        println!("2. Stop and restart services");
+        println!("3. Verify health checks on new port");
+        println!("4. Update any client configurations pointing to old port");
     } else {
-        println!("\n{}", "⚠️  Actual migration not implemented yet - use --dry-run to preview".yellow());
+        println!("\n{}", "DRY RUN - No changes made".yellow().bold());
+        println!("Run without --dry-run to execute the migration");
     }
 
     Ok(())
