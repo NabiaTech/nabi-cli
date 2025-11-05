@@ -14,7 +14,10 @@ use sha2::{Digest, Sha256};
 mod forge;
 mod paths;
 mod repo;
+mod commands;
 use paths::NabiPaths;
+use commands::port;
+use commands::tmux;
 
 /// nabi - Unified Federation Command Gateway
 ///
@@ -125,6 +128,15 @@ enum Commands {
         #[command(subcommand)]
         command: PortCommands,
     },
+    /// Tmux pane coordination (multi-agent orchestration)
+    Tmux {
+        #[command(subcommand)]
+        command: tmux::TmuxCommands,
+    },
+    Hooks {
+        #[command(subcommand)]
+        command: HooksCommands,
+    },
     /// Mode management (manual/auto commit enforcement)
     Mode {
         /// Mode to switch to (manual or auto)
@@ -148,6 +160,9 @@ enum Commands {
         #[arg(value_enum)]
         shell: CompletionShell,
     },
+    /// Health check (alias for 'self doctor')
+    #[command(visible_alias = "doc")]
+    Doctor,
 }
 
 #[derive(Subcommand)]
@@ -644,6 +659,16 @@ enum PortCommands {
 }
 
 #[derive(Subcommand)]
+enum HooksCommands {
+    /// Transform hooks from schema to derived state (or use stable hooks)
+    Transform {
+        /// Use stable hooks from ~/.nabi/src/hooks instead of transforming
+        #[arg(short, long)]
+        stable: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum RecoverCommands {
     /// Recover recent Claude sessions
     Sessions {
@@ -827,10 +852,13 @@ fn main() -> Result<()> {
         Commands::Record { command } => handle_record(command),
         Commands::Agent { command } => handle_agent(command),
         Commands::Port { command } => handle_port(command),
+        Commands::Tmux { command } => tmux::handle_tmux_commands(command),
+        Commands::Hooks { command } => handle_hooks(command),
         Commands::Mode { mode } => handle_mode(mode),
         Commands::Riff { args } => handle_riff(args),
         Commands::Recover { command } => handle_recover(command),
         Commands::Completions { shell } => handle_completions(shell),
+        Commands::Doctor => handle_self(SelfCommands::Doctor),
     }
 }
 
@@ -1103,6 +1131,18 @@ fn register_tool(args: ToolRegisterArgs) -> Result<()> {
         None
     };
 
+    // Validate and setup dependencies
+    let (validated_deps, dep_messages) = validate_tool_dependencies(
+        &source_path,
+        &venv_location,
+        runtime
+    )?;
+
+    // Print dependency validation messages
+    for msg in &dep_messages {
+        println!("  {}", msg);
+    }
+
     let installer_hint = args
         .installer
         .clone()
@@ -1149,7 +1189,7 @@ fn register_tool(args: ToolRegisterArgs) -> Result<()> {
             location,
             setup_script: None,
             installer: installer_hint.clone(),
-            dependencies: Vec::new(),
+            dependencies: validated_deps.clone(),
         }),
         capabilities: CapabilitiesSection {
             federation_aware: args.federation_aware,
@@ -1221,6 +1261,142 @@ fn register_tool(args: ToolRegisterArgs) -> Result<()> {
     );
 
     Ok(())
+}
+
+/// Validate and setup dependencies for Python tools
+/// Returns (dependencies_list, validation_messages)
+fn validate_tool_dependencies(
+    source_path: &Path,
+    venv_location: &Option<String>,
+    runtime: RuntimeKind,
+) -> Result<(Vec<String>, Vec<String>)> {
+    let mut dependencies = Vec::new();
+    let mut messages = Vec::new();
+
+    // Only validate for Python tools
+    if !matches!(runtime, RuntimeKind::Python) {
+        return Ok((dependencies, messages));
+    }
+
+    // Look for TOML config with dependencies
+    let mut possible_locations = vec![
+        Some(source_path.join("requirements.txt")),
+    ];
+
+    // Add TOML path if source file name is available
+    if let Some(file_name) = source_path.file_name() {
+        if let Some(parent) = source_path.parent().and_then(|p| p.parent()) {
+            possible_locations.push(Some(parent.join("tools")
+                .join(file_name)
+                .with_extension("toml")));
+        }
+    }
+
+    let mut found_deps = false;
+
+    // Check for dependencies
+    for toml_path in possible_locations.iter().flatten() {
+        if !toml_path.exists() {
+            continue;
+        }
+
+        if toml_path.file_name().and_then(|n| n.to_str()) == Some("requirements.txt") {
+            // Parse requirements.txt
+            if let Ok(content) = fs::read_to_string(toml_path) {
+                dependencies = content
+                    .lines()
+                    .filter(|line| !line.trim().starts_with('#') && !line.trim().is_empty())
+                    .map(|line| line.trim().to_string())
+                    .collect();
+                found_deps = !dependencies.is_empty();
+                messages.push(format!("📦 Found {} dependencies in {}",
+                    dependencies.len(),
+                    toml_path.display()));
+                break;
+            }
+        } else if toml_path.extension().and_then(|e| e.to_str()) == Some("toml") {
+            // Parse TOML for [tool.dependencies.python]
+            if let Ok(content) = fs::read_to_string(toml_path) {
+                if let Ok(toml_value) = toml::from_str::<toml::Value>(&content) {
+                    if let Some(tool_deps) = toml_value
+                        .get("tool")
+                        .and_then(|t| t.get("dependencies"))
+                        .and_then(|d| d.get("python"))
+                        .and_then(|p| p.as_array())
+                    {
+                        dependencies = tool_deps
+                            .iter()
+                            .filter_map(|v| v.as_str())
+                            .map(|s| s.to_string())
+                            .collect();
+                        found_deps = !dependencies.is_empty();
+                        messages.push(format!("📦 Found {} dependencies in {}",
+                            dependencies.len(),
+                            toml_path.display()));
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    if !found_deps {
+        messages.push("⚠️  No dependencies found - tool may require manual setup".to_string());
+        return Ok((dependencies, messages));
+    }
+
+    // Validate venv exists if dependencies found
+    if let Some(venv_loc) = venv_location {
+        let venv_path = expand_home(venv_loc)?;
+        let python_bin = venv_path.join("bin").join("python");
+
+        if !venv_path.exists() {
+            messages.push(format!("🔧 Creating venv at {}...", venv_loc));
+
+            // Create venv using uv
+            let status = process::Command::new("uv")
+                .args(&["venv", venv_path.to_str().unwrap()])
+                .status()
+                .context("Failed to create venv with uv")?;
+
+            if !status.success() {
+                anyhow::bail!("Failed to create venv at {}", venv_loc);
+            }
+            messages.push("✅ Venv created".to_string());
+        } else {
+            messages.push(format!("✓ Venv exists at {}", venv_loc));
+        }
+
+        // Install dependencies
+        if !dependencies.is_empty() {
+            messages.push(format!("📥 Installing {} dependencies...", dependencies.len()));
+
+            // Create temporary requirements file
+            let temp_req = std::env::temp_dir().join("nabi_temp_requirements.txt");
+            fs::write(&temp_req, dependencies.join("\n"))?;
+
+            let status = process::Command::new("uv")
+                .args(&[
+                    "pip", "install",
+                    "-r", temp_req.to_str().unwrap(),
+                    "--python", python_bin.to_str().unwrap()
+                ])
+                .status()
+                .context("Failed to install dependencies with uv")?;
+
+            fs::remove_file(temp_req)?;
+
+            if !status.success() {
+                messages.push("⚠️  Some dependencies failed to install".to_string());
+            } else {
+                messages.push(format!("✅ Installed {} packages", dependencies.len()));
+            }
+        }
+    } else {
+        messages.push("⚠️  No venv configured - dependencies not installed".to_string());
+    }
+
+    Ok((dependencies, messages))
 }
 
 const TOOL_SCHEMA_PATH: &str = "~/.config/nabi/governance/schemas/tool.schema.json";
@@ -2133,52 +2309,169 @@ fn handle_port(command: PortCommands) -> Result<()> {
     match command {
         PortCommands::List { platform } => {
             println!("{}", "📋 Listing port allocations...".cyan().bold());
-            if let Some(p) = platform {
-                route_to_python_cli(&["port", "list", "--platform", &p])
-            } else {
-                route_to_python_cli(&["port", "list"])
-            }
+            port::cmd_list(platform.as_deref())
         }
         PortCommands::Check => {
             println!("{}", "🔍 Validating port allocations...".cyan().bold());
-            route_to_python_cli(&["port", "check"])
+            port::cmd_check()
         }
         PortCommands::CrossPlatform => {
             println!("{}", "🌐 Checking cross-platform conflicts...".cyan().bold());
-            route_to_python_cli(&["port", "cross-platform"])
+            port::cmd_cross_platform()
         }
         PortCommands::Shift { service, old_port, new_port, dry_run } => {
             println!("{}", format!("🔄 Migrating {} from {} to {}...", service, old_port, new_port).yellow().bold());
-            let old_port_str = old_port.to_string();
-            let new_port_str = new_port.to_string();
-            let mut args = vec!["port", "shift", &service, &old_port_str, &new_port_str];
-            let dry_run_str = if dry_run { "--dry-run" } else { "" };
-            if dry_run {
-                args.push(dry_run_str);
-            }
-            route_to_python_cli(&args)
+            port::cmd_shift(&service, old_port, new_port, dry_run)
         }
         PortCommands::Drift { forensic, since } => {
             println!("{}", "🔎 Analyzing port drift...".yellow().bold());
-            let mut args = vec!["port", "drift"];
-            if forensic {
-                args.push("--forensic");
-            }
-            let since_str;
-            if let Some(ref s) = since {
-                since_str = s.clone();
-                args.push("--since");
-                args.push(&since_str);
-            }
-            route_to_python_cli(&args)
+            port::cmd_drift(forensic, since.as_deref())
         }
         PortCommands::Fix => {
             println!("{}", "🔧 Generating fix commands...".green().bold());
-            route_to_python_cli(&["port", "fix"])
+            port::cmd_fix()
         }
         PortCommands::GenerateEnv => {
             println!("{}", "📝 Generating .env file...".cyan().bold());
-            route_to_python_cli(&["port", "generate-env"])
+            port::cmd_generate_env()
+        }
+    }
+}
+
+fn handle_hooks(command: HooksCommands) -> Result<()> {
+    match command {
+        HooksCommands::Transform { stable } => {
+            if stable {
+                println!("{}", "🔗 Using stable hooks from ~/.nabi/src/hooks...".cyan().bold());
+
+                // Use stable hooks: copy from ~/.nabi/src/hooks/src/ to deployment location
+                let home = dirs::home_dir()
+                    .ok_or_else(|| anyhow::anyhow!("Failed to get home directory"))?;
+                let stable_hooks_src = home.join(".nabi/src/hooks/src");
+                let hooks_deploy = NabiPaths::data_dir()?.join("bin").join("hooks");
+
+                // Ensure deployment directory exists
+                fs::create_dir_all(&hooks_deploy)
+                    .context(format!("Failed to create hooks directory at {}", hooks_deploy.display()))?;
+
+                if !stable_hooks_src.exists() {
+                    eprintln!(
+                        "{}",
+                        format!("❌ Stable hooks not found at: {}", stable_hooks_src.display())
+                            .red()
+                            .bold()
+                    );
+                    eprintln!(
+                        "{}",
+                        "Expected stable hooks at ~/.nabi/src/hooks/src/".yellow()
+                    );
+                    process::exit(1);
+                }
+
+                // Copy hook files from stable location
+                let mut copied = 0;
+                if let Ok(entries) = fs::read_dir(&stable_hooks_src) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.extension().map_or(false, |e| e == "py") && path.is_file() {
+                            let filename = path.file_name().unwrap();
+                            let dest = hooks_deploy.join(filename);
+                            fs::copy(&path, &dest)
+                                .context(format!("Failed to copy {} to {}", path.display(), dest.display()))?;
+                            copied += 1;
+                        }
+                    }
+                }
+
+                println!(
+                    "{}",
+                    format!("✓ Copied {} hook files to {}", copied, hooks_deploy.display()).green()
+                );
+                Ok(())
+            } else {
+                println!("{}", "🔄 Transforming hooks from schema to derived state...".cyan().bold());
+
+                // Run transformation scripts
+                let home = dirs::home_dir()
+                    .ok_or_else(|| anyhow::anyhow!("Failed to get home directory"))?;
+                let transform_scripts_dir = home.join(".nabi/src/hooks/src");
+
+                // Find Python executable
+                let python_exe = std::env::var("NABI_PYTHON")
+                    .ok()
+                    .map(PathBuf::from)
+                    .or_else(|| {
+                        std::process::Command::new("python3")
+                            .arg("--version")
+                            .output()
+                            .ok()
+                            .map(|_| PathBuf::from("python3"))
+                    })
+                    .or_else(|| {
+                        std::process::Command::new("python")
+                            .arg("--version")
+                            .output()
+                            .ok()
+                            .map(|_| PathBuf::from("python"))
+                    })
+                    .ok_or_else(|| anyhow::anyhow!("Python not found. Set NABI_PYTHON or ensure python3/python is in PATH"))?;
+
+                // Find and execute all transform_*.py scripts
+                let mut executed = 0;
+                if let Ok(entries) = fs::read_dir(&transform_scripts_dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.is_file()
+                            && path.file_name()
+                                .and_then(|n| n.to_str())
+                                .map_or(false, |n| n.starts_with("transform_") && n.ends_with(".py"))
+                        {
+                            println!(
+                                "{}",
+                                format!("  Running {}...", path.file_name().unwrap().to_string_lossy())
+                                    .dimmed()
+                            );
+
+                            let status = process::Command::new(&python_exe)
+                                .arg(&path)
+                                .status()
+                                .context(format!("Failed to execute transform script: {}", path.display()))?;
+
+                            if !status.success() {
+                                eprintln!(
+                                    "{}",
+                                    format!("❌ Transform script failed: {}", path.display())
+                                        .red()
+                                        .bold()
+                                );
+                                process::exit(status.code().unwrap_or(1));
+                            }
+
+                            executed += 1;
+                        }
+                    }
+                }
+
+                if executed == 0 {
+                    eprintln!(
+                        "{}",
+                        format!("⚠️  No transformation scripts found at: {}", transform_scripts_dir.display())
+                            .yellow()
+                            .bold()
+                    );
+                    eprintln!(
+                        "{}",
+                        "Expected transform_*.py scripts in ~/.nabi/src/hooks/src/".yellow()
+                    );
+                } else {
+                    println!(
+                        "{}",
+                        format!("✓ Executed {} transformation script(s)", executed).green()
+                    );
+                }
+
+                Ok(())
+            }
         }
     }
 }
