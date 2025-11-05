@@ -692,6 +692,18 @@ enum RecoverCommands {
 enum ToolCommands {
     /// Register a tool manifest for federation routing
     Register(ToolRegisterArgs),
+    /// List all registered tools
+    List {
+        /// Output format (text, json)
+        #[arg(short, long, default_value = "text")]
+        format: String,
+        /// Filter by status (active, inactive, deprecated)
+        #[arg(short, long)]
+        status: Option<String>,
+        /// Filter by runtime (python, rust, bash, etc)
+        #[arg(short, long)]
+        runtime: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1033,6 +1045,9 @@ fn handle_repo(command: RepoCommands) -> Result<()> {
 fn handle_tool(command: ToolCommands) -> Result<()> {
     match command {
         ToolCommands::Register(args) => register_tool(args),
+        ToolCommands::List { format, status, runtime } => {
+            list_tools(&format, status.as_deref(), runtime.as_deref())
+        }
     }
 }
 
@@ -2579,4 +2594,175 @@ fn route_to_python_cli(args: &[&str]) -> Result<()> {
         eprintln!("{}", "Run 'nabi self doctor' to diagnose issues.".yellow());
         process::exit(1);
     }
+}
+
+fn list_tools(format: &str, status_filter: Option<&str>, runtime_filter: Option<&str>) -> Result<()> {
+    println!("{}", "📋 Listing registered tools...".cyan().bold());
+
+    let tools_dir = NabiPaths::config_dir()?.join("tools");
+
+    if !tools_dir.exists() {
+        println!("{}", "  No tools registered yet".dimmed());
+        return Ok(());
+    }
+
+    let mut tools: Vec<(String, String, String, String, String, String, String)> = Vec::new();
+
+    // Read all TOML files from the tools directory
+    for entry in fs::read_dir(&tools_dir)
+        .with_context(|| format!("Failed to read tools directory at {}", tools_dir.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+
+        if path.extension().and_then(|e| e.to_str()) != Some("toml") {
+            continue;
+        }
+
+        let content = fs::read_to_string(&path)
+            .with_context(|| format!("Failed to read {}", path.display()))?;
+
+        if let Ok(parsed) = toml::from_str::<toml::Value>(&content) {
+            // Extract tool information
+            if let Some(tool_section) = parsed.get("tool").and_then(|v| v.as_table()) {
+                let id = tool_section
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+                let name = tool_section
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&id)
+                    .to_string();
+                let version = tool_section
+                    .get("version")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("0.0.0")
+                    .to_string();
+                let description = tool_section
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let tool_status = tool_section
+                    .get("status")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+
+                let runtime = parsed
+                    .get("runtime")
+                    .and_then(|r| r.get("language"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+
+                let commands = parsed
+                    .get("commands")
+                    .and_then(|c| c.get("commands"))
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    })
+                    .unwrap_or_default();
+
+                // Apply filters
+                if let Some(status) = status_filter {
+                    if tool_status != status {
+                        continue;
+                    }
+                }
+
+                if let Some(rt) = runtime_filter {
+                    if !runtime.contains(rt) {
+                        continue;
+                    }
+                }
+
+                tools.push((id, name, version, description, tool_status, runtime, commands));
+            }
+        }
+    }
+
+    // Sort by name
+    tools.sort_by(|a, b| a.1.cmp(&b.1));
+
+    match format {
+        "json" => output_tools_json(&tools)?,
+        "text" | _ => output_tools_text(&tools)?,
+    }
+
+    Ok(())
+}
+
+fn output_tools_text(tools: &[(String, String, String, String, String, String, String)]) -> Result<()> {
+    if tools.is_empty() {
+        println!("{}", "  No tools found matching the criteria".dimmed());
+        return Ok(());
+    }
+
+    println!(
+        "\n  {:<20} {:<15} {:<12} {:<12} {}",
+        "Name".bold(),
+        "Version".bold(),
+        "Runtime".bold(),
+        "Status".bold(),
+        "Commands"
+    );
+    println!(
+        "  {}",
+        "─".repeat(80).dimmed()
+    );
+
+    for (_id, name, version, _description, status, runtime, commands) in tools {
+        let status_colored = match status.as_str() {
+            "active" => status.green(),
+            "inactive" => status.yellow(),
+            "deprecated" => status.red(),
+            _ => status.normal(),
+        };
+
+        println!(
+            "  {:<20} {:<15} {:<12} {:<12} {}",
+            name.normal(),
+            version.dimmed(),
+            runtime.cyan(),
+            status_colored,
+            commands.dimmed()
+        );
+    }
+
+    println!("\n  Total: {} tool(s)", tools.len());
+
+    Ok(())
+}
+
+fn output_tools_json(tools: &[(String, String, String, String, String, String, String)]) -> Result<()> {
+    let json_tools: Vec<serde_json::Value> = tools
+        .iter()
+        .map(|(id, name, version, description, status, runtime, commands)| {
+            serde_json::json!({
+                "id": id,
+                "name": name,
+                "version": version,
+                "description": description,
+                "status": status,
+                "runtime": runtime,
+                "commands": commands.split(", ").collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+
+    let output = serde_json::json!({
+        "tools": json_tools,
+        "count": json_tools.len(),
+    });
+
+    println!("{}", serde_json::to_string_pretty(&output)?);
+
+    Ok(())
 }
