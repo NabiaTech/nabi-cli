@@ -18,6 +18,7 @@ mod commands;
 use paths::NabiPaths;
 use commands::port;
 use commands::tmux;
+use commands::list;
 
 /// nabi - Unified Federation Command Gateway
 ///
@@ -127,6 +128,18 @@ enum Commands {
     Port {
         #[command(subcommand)]
         command: PortCommands,
+    },
+    /// Runtime introspection and discovery (sessions, windows, panes, agents)
+    ///
+    /// Query the runtime for current state to enable:
+    /// - Dynamic shell completion (nabi list sessions powers tmux completion)
+    /// - System introspection (what agents/sessions/workers are active?)
+    /// - Integration with external tools (kubectl, docker, etc.)
+    ///
+    /// All output is plain text (one item per line) for piping to shell completion systems.
+    List {
+        #[command(subcommand)]
+        command: list::ListCommands,
     },
     /// Tmux pane coordination (multi-agent orchestration)
     ///
@@ -856,6 +869,7 @@ fn main() -> Result<()> {
         Commands::Record { command } => handle_record(command),
         Commands::Agent { command } => handle_agent(command),
         Commands::Port { command } => handle_port(command),
+        Commands::List { command } => list::handle_list_commands(command),
         Commands::Tmux { command } => tmux::handle_tmux_commands(command),
         Commands::Hooks { command } => handle_hooks(command),
         Commands::Mode { mode } => handle_mode(mode),
