@@ -15,7 +15,7 @@ _nabi_tmux_send_prompt_pane() {
     local -a sessions windows panes
 
     # Get all tmux sessions
-    sessions=($(nabi list sessions 2>/dev/null))
+    sessions=($(nabi tmux list sessions 2>/dev/null))
 
     if (( ${#sessions} == 0 )); then
         return 1
@@ -24,11 +24,11 @@ _nabi_tmux_send_prompt_pane() {
     # For each session, get all windows
     local -a targets
     for session in $sessions; do
-        windows=($(nabi list windows "$session" 2>/dev/null))
+        windows=($(nabi tmux list windows "$session" 2>/dev/null))
 
         for window in $windows; do
             # Get panes for this window (in full format: session:window.pane)
-            panes=($(nabi list panes "$session" "$window" --format full 2>/dev/null))
+            panes=($(nabi tmux list panes "$session" "$window" --format full 2>/dev/null))
 
             for pane in $panes; do
                 targets+=("$pane")
@@ -40,49 +40,49 @@ _nabi_tmux_send_prompt_pane() {
     _values 'pane target' $targets
 }
 
-# Completion for: nabi list sessions
-_nabi_list_sessions() {
+# Completion for: nabi tmux list sessions
+_nabi_tmux_list_sessions() {
     local -a sessions
-    sessions=($(nabi list sessions 2>/dev/null))
+    sessions=($(nabi tmux list sessions 2>/dev/null))
     _values 'session' $sessions
 }
 
-# Completion for: nabi list windows <SESSION>
-_nabi_list_windows() {
-    local session="${words[4]}"
+# Completion for: nabi tmux list windows <SESSION>
+_nabi_tmux_list_windows() {
+    local session="${words[5]}"
 
     if [[ -z "$session" ]]; then
         # No session yet, suggest available sessions
         local -a sessions
-        sessions=($(nabi list sessions 2>/dev/null))
+        sessions=($(nabi tmux list sessions 2>/dev/null))
         _values 'session' $sessions
     else
         # Session specified, list its windows
         local -a windows
-        windows=($(nabi list windows "$session" 2>/dev/null))
+        windows=($(nabi tmux list windows "$session" 2>/dev/null))
         _values 'window' $windows
     fi
 }
 
-# Completion for: nabi list panes <SESSION> <WINDOW>
-_nabi_list_panes() {
-    local session="${words[4]}"
-    local window="${words[5]}"
+# Completion for: nabi tmux list panes <SESSION> <WINDOW>
+_nabi_tmux_list_panes() {
+    local session="${words[5]}"
+    local window="${words[6]}"
 
     if [[ -z "$session" ]]; then
         # No session yet
         local -a sessions
-        sessions=($(nabi list sessions 2>/dev/null))
+        sessions=($(nabi tmux list sessions 2>/dev/null))
         _values 'session' $sessions
     elif [[ -z "$window" ]]; then
         # Session specified, list its windows
         local -a windows
-        windows=($(nabi list windows "$session" 2>/dev/null))
+        windows=($(nabi tmux list windows "$session" 2>/dev/null))
         _values 'window' $windows
     else
         # Both specified, list panes
         local -a panes
-        panes=($(nabi list panes "$session" "$window" 2>/dev/null))
+        panes=($(nabi tmux list panes "$session" "$window" 2>/dev/null))
         _values 'pane' $panes
     fi
 }
@@ -94,23 +94,23 @@ _nabi_tmux_send_prompt() {
         "2: :(message)"
 }
 
-# Wire completions for nabi list subcommands
-_nabi_list() {
-    local cmd="$words[3]"
+# Wire completions for nabi tmux list subcommands
+_nabi_tmux_list() {
+    local cmd="$words[4]"
 
     case "$cmd" in
         sessions)
-            _nabi_list_sessions
+            _nabi_tmux_list_sessions
             ;;
         windows)
-            _nabi_list_windows
+            _nabi_tmux_list_windows
             ;;
         panes)
-            _nabi_list_panes
+            _nabi_tmux_list_panes
             ;;
     esac
 }
 
 # Register the dynamic completions
 compdef _nabi_tmux_send_prompt nabi-tmux-send-prompt
-compdef _nabi_list nabi-list
+compdef _nabi_tmux_list nabi-tmux-list
