@@ -129,6 +129,10 @@ enum Commands {
         command: PortCommands,
     },
     /// Tmux pane coordination (multi-agent orchestration)
+    ///
+    /// Safely inject commands into tmux panes with guaranteed atomic delivery.
+    /// Prevents race conditions by sending text and Enter in a single operation.
+    /// Perfect for coordinating work across multiple agents.
     Tmux {
         #[command(subcommand)]
         command: tmux::TmuxCommands,

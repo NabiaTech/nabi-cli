@@ -15,25 +15,77 @@ use std::thread;
 use std::time::Duration;
 
 #[derive(Subcommand)]
+#[command(about = "Atomic tmux pane coordination for multi-agent orchestration", long_about =
+"Provides reliable cross-pane IPC operations with guaranteed atomic execution.
+
+This command enables safe coordination across tmux windows by ensuring that text
+and Enter keypresses are delivered together in a single operation, preventing
+race conditions that occur with sequential send-keys calls.
+
+Perfect for:
+  - Coordinating Claude agents across multiple tmux panes
+  - Reliable multi-window terminal automation
+  - Federation command injection with guaranteed delivery
+
+All operations are atomic: if tmux accepts the command, both text and Enter
+are guaranteed to be delivered as a single unit.")]
 pub enum TmuxCommands {
-    /// Send message + Execute atomically (text + Enter in single operation)
+    /// Send message + Execute atomically (text + Enter in single tmux operation)
     ///
-    /// Guaranteed atomic execution: message and Enter are sent in one tmux command,
-    /// preventing race conditions where Enter gets missed.
+    /// Executes a command in a tmux pane with guaranteed atomic delivery.
+    /// The message and Enter key are sent in a single tmux send-keys call,
+    /// eliminating race conditions where Enter could be missed.
     ///
-    /// Example: nabi tmux send-prompt cross-pane:3.2 "echo hello world"
+    /// Execution guarantees:
+    ///   - Text and Enter are always delivered together (atomic operation)
+    ///   - No interference from other terminal operations
+    ///   - Configurable delay for tmux processing time
+    ///
+    /// Common use cases:
+    ///   - Injecting commands into running Claude agents
+    ///   - Coordinating work across federation agents
+    ///   - Reliable automation across multiple panes
+    #[command(after_help = "EXAMPLES:
+  # Simple echo command
+  nabi tmux send-prompt cross-pane:3.2 \"echo 'Hello from nabi'\"
+
+  # Run shell command
+  nabi tmux send-prompt mywindow:1 \"ls -lah ~/nabia\"
+
+  # With custom delay (100ms)
+  nabi tmux send-prompt session:2.1 \"cargo build\" --delay 100
+
+  # Coordinate multiple agents
+  nabi tmux send-prompt agent1:0 \"task_a\"
+  nabi tmux send-prompt agent2:0 \"task_b\"
+  nabi tmux send-prompt agent3:0 \"task_c\"
+
+PANE FORMAT:
+  session:window.pane  - Full specification (e.g., cross-pane:3.2)
+  session:window       - Implicit pane 1 (e.g., mywindow:1 = mywindow:1.1)
+
+  Where: window and pane numbers are 1-based (not 0-based)")]
     SendPrompt {
         /// Tmux pane target (format: session:window.pane or session:window)
-        /// Examples: cross-pane:3.2, schema-driven:1, mywindow:2
+        ///
+        /// Examples: cross-pane:3.2, schema-driven:1, mywindow:2.1
+        /// Windows and panes use 1-based numbering
         #[arg(value_name = "PANE")]
         pane: String,
 
         /// Message/command to send and execute
+        ///
+        /// This is the exact text that will be typed into the pane,
+        /// followed immediately by Enter (guaranteed atomic delivery).
+        /// Supports any shell command, env vars, or special sequences.
         #[arg(value_name = "MESSAGE")]
         message: String,
 
         /// Delay after execution in milliseconds (default: 50ms)
-        /// Allows time for tmux to process before next operation
+        ///
+        /// Allows time for tmux to process the command before returning.
+        /// Increase this if you're sending rapid sequences or complex commands.
+        /// Most cases work fine with the default 50ms.
         #[arg(long, default_value = "50")]
         delay: u64,
     },
