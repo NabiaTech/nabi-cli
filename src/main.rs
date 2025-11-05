@@ -158,6 +158,11 @@ enum Commands {
         #[command(subcommand)]
         command: RecoverCommands,
     },
+    /// Health check operations (federation substrate validation and reporting)
+    Health {
+        #[command(subcommand)]
+        command: HealthCommands,
+    },
     /// Generate shell completion scripts
     Completions {
         /// Shell to generate completions for
@@ -689,6 +694,43 @@ enum RecoverCommands {
 }
 
 #[derive(Subcommand)]
+enum HealthCommands {
+    /// Run federation substrate health checks
+    Check {
+        /// Auto-remediate critical issues
+        #[arg(long)]
+        auto_remediate: bool,
+        /// Only show FSM state changes (don't run checks)
+        #[arg(long)]
+        fsm_only: bool,
+    },
+    /// Show health check status and recent reports
+    Status {
+        /// Show detailed results
+        #[arg(short, long)]
+        detailed: bool,
+        /// Look back this many hours
+        #[arg(long, default_value = "24")]
+        hours: usize,
+    },
+    /// Generate health report
+    Report {
+        /// Output format (text, json, markdown)
+        #[arg(short, long, default_value = "text")]
+        format: String,
+        /// Export to file
+        #[arg(short, long)]
+        output: Option<String>,
+    },
+    /// Open Grafana dashboard with live health visualization
+    Dashboard {
+        /// Port to access Grafana
+        #[arg(long, default_value = "3000")]
+        port: u16,
+    },
+}
+
+#[derive(Subcommand)]
 enum ToolCommands {
     /// Register a tool manifest for federation routing
     Register(ToolRegisterArgs),
@@ -873,6 +915,7 @@ fn main() -> Result<()> {
         Commands::Mode { mode } => handle_mode(mode),
         Commands::Riff { args } => handle_riff(args),
         Commands::Recover { command } => handle_recover(command),
+        Commands::Health { command } => handle_health(command),
         Commands::Completions { shell } => handle_completions(shell),
         Commands::Doctor => handle_self(SelfCommands::Doctor),
     }
@@ -2565,6 +2608,56 @@ fn handle_recover(command: RecoverCommands) -> Result<()> {
             }
 
             route_to_python_cli(&args)
+        }
+    }
+}
+
+fn handle_health(command: HealthCommands) -> Result<()> {
+    match command {
+        HealthCommands::Check { auto_remediate, fsm_only } => {
+            println!("{}", "🏥 Running federation substrate health checks...".green().bold());
+
+            let mut args = vec!["health", "check"];
+
+            if auto_remediate {
+                args.push("--auto-remediate");
+            }
+
+            if fsm_only {
+                args.push("--fsm-only");
+            }
+
+            route_to_python_cli(&args)
+        }
+        HealthCommands::Status { detailed, hours } => {
+            println!("{}", "📊 Checking health status...".cyan().bold());
+
+            let hours_str = hours.to_string();
+            let mut args = vec!["health", "status", "--hours", &hours_str];
+
+            if detailed {
+                args.push("--detailed");
+            }
+
+            route_to_python_cli(&args)
+        }
+        HealthCommands::Report { format, output } => {
+            println!("{}", format!("📋 Generating health report ({} format)...", format).cyan().bold());
+
+            let mut args = vec!["health", "report", "--format", &format];
+
+            if let Some(ref path) = output {
+                args.push("--output");
+                args.push(path);
+            }
+
+            route_to_python_cli(&args)
+        }
+        HealthCommands::Dashboard { port } => {
+            println!("{}", format!("📈 Opening Grafana dashboard at http://localhost:{}...", port).blue().bold());
+
+            let port_str = port.to_string();
+            route_to_python_cli(&["health", "dashboard", "--port", &port_str])
         }
     }
 }

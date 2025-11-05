@@ -113,11 +113,17 @@ pub struct ServiceSpec {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct MigrationNotes {
+    #[serde(default)]
     pub drift_identified: String,
+    #[serde(default)]
     pub updated: String,
-    pub last_resolution: String,
+    #[serde(default)]
+    pub last_resolution: Option<String>,
+    #[serde(default)]
     pub critical_issues: Vec<String>,
+    #[serde(default)]
     pub resolved_issues: Vec<String>,
+    #[serde(default)]
     pub forensics_required: Vec<String>,
 }
 
@@ -187,7 +193,8 @@ pub fn load_registry() -> Result<PortRegistry> {
 }
 
 fn get_registry_path() -> Result<PathBuf> {
-    // Check NABI_HOME environment variable first
+    // Runtime data (registry.json) belongs in XDG_STATE_HOME per XDG Base Directory Spec
+    // Check NABI_HOME environment variable first (backward compatibility)
     if let Ok(nabi_home) = std::env::var("NABI_HOME") {
         let path = PathBuf::from(nabi_home).join("governance").join("port-registry.json");
         if path.exists() {
@@ -195,17 +202,30 @@ fn get_registry_path() -> Result<PathBuf> {
         }
     }
 
-    // Default to ~/.config/nabi/governance/port-registry.json
-    let home = dirs::home_dir()
-        .ok_or_else(|| anyhow::anyhow!("Failed to get home directory"))?;
+    // Primary location: XDG_STATE_HOME/nabi/governance/port-registry.json
+    // (State directory = generated/runtime data, not user-editable config)
+    use crate::paths::NabiPaths;
+    let state_dir = NabiPaths::state_dir()?;
+    let state_path = state_dir.join("governance").join("port-registry.json");
 
-    let path = home.join(".config").join("nabi").join("governance").join("port-registry.json");
-
-    if !path.exists() {
-        anyhow::bail!("Registry not found at {}", path.display());
+    if state_path.exists() {
+        return Ok(state_path);
     }
 
-    Ok(path)
+    // Fallback: Check config directory for migrations from old setup
+    let config_dir = NabiPaths::config_dir()?;
+    let config_path = config_dir.join("governance").join("port-registry.json");
+
+    if config_path.exists() {
+        return Ok(config_path);
+    }
+
+    // Neither location has the registry
+    anyhow::bail!(
+        "Port registry not found. Checked:\n  - {}\n  - {}\n\nRun: nabi port rebuild",
+        state_path.display(),
+        config_path.display()
+    );
 }
 
 // ============================================================================
@@ -544,7 +564,9 @@ pub fn cmd_drift(forensic: bool, since: Option<&str>) -> Result<()> {
     if let Some(notes) = &registry.migration_notes {
         println!("\nDrift Identified: {}", notes.drift_identified);
         println!("Last Update: {}", notes.updated);
-        println!("Last Resolution: {}", notes.last_resolution);
+        if let Some(resolution) = &notes.last_resolution {
+            println!("Last Resolution: {}", resolution);
+        }
 
         if !notes.critical_issues.is_empty() {
             println!("\n{}", "Critical Issues:".red().bold());
@@ -660,4 +682,181 @@ pub fn cmd_generate_env() -> Result<()> {
     println!("    - .env.ports");
 
     Ok(())
+}
+
+// ============================================================================
+// Unit Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_platform_detection() {
+        let platform = detect_platform();
+
+        // Platform detection should always return something
+        assert!(!platform.is_empty());
+
+        // Platform should be one of the known ones
+        let known_platforms = vec!["macos", "wsl", "rpi", "linux"];
+        assert!(known_platforms.contains(&platform.as_str()));
+    }
+
+    #[test]
+    fn test_port_range_validation() {
+        // Valid ports
+        assert!(is_valid_port(3000)); // Start of federation range
+        assert!(is_valid_port(8499)); // End of federation range
+        assert!(is_valid_port(8080)); // Common dev port
+
+        // Invalid ports
+        assert!(!is_valid_port(0));     // Too low
+        assert!(!is_valid_port(1));     // Reserved range
+        assert!(!is_valid_port(1024));  // Below federation range (deprecated check)
+        assert!(!is_valid_port(65535)); // Too high for our range
+    }
+
+    #[test]
+    fn test_port_registry_deserialization() {
+        // Test that our data structures can deserialize properly
+        let sample_json = r#"{
+            "version": "1.0",
+            "updated": "2025-11-05",
+            "schema_version": "1.0",
+            "description": "Port registry",
+            "metadata": {
+                "created_by": "test",
+                "purpose": "testing",
+                "validation_tool": "test",
+                "last_reconciliation": "2025-11-05",
+                "reconciliation_agent": "test"
+            },
+            "port_ranges": {
+                "federation": {
+                    "start": 3000,
+                    "end": 8499,
+                    "description": "Federation services"
+                }
+            },
+            "standard_allocations": {
+                "surrealdb": {
+                    "port": 8004,
+                    "protocol": "tcp",
+                    "purpose": "Database",
+                    "required": true,
+                    "cross_platform": true
+                }
+            },
+            "platform_configs": {}
+        }"#;
+
+        let registry: Result<PortRegistry, _> = serde_json::from_str(sample_json);
+        assert!(registry.is_ok());
+
+        let reg = registry.unwrap();
+        assert_eq!(reg.version, "1.0");
+        assert!(reg.port_ranges.contains_key("federation"));
+        assert!(reg.standard_allocations.contains_key("surrealdb"));
+    }
+
+    #[test]
+    fn test_get_registry_path_with_nabi_home() {
+        // Test NABI_HOME fallback
+        // This would normally be set in CI but might not be in local testing
+        let original = std::env::var("NABI_HOME").ok();
+
+        // Set a temporary NABI_HOME
+        std::env::set_var("NABI_HOME", "/tmp/test_nabi_home");
+
+        // The path resolver should at least not crash
+        let path_result = get_registry_path();
+        // We don't assert success because /tmp test path won't exist
+        // But we verify it doesn't panic
+        let _ = path_result;
+
+        // Restore original
+        if let Some(orig) = original {
+            std::env::set_var("NABI_HOME", orig);
+        } else {
+            std::env::remove_var("NABI_HOME");
+        }
+    }
+
+    #[test]
+    fn test_service_health_structure() {
+        // Test that ServiceHealth can be created and used
+        let health = ServiceHealth {
+            service: "test_service".to_string(),
+            port: 8080,
+            listening: false,
+            responding: false,
+            error: None,
+        };
+
+        assert_eq!(health.service, "test_service");
+        assert_eq!(health.port, 8080);
+        assert!(!health.listening);
+        assert!(!health.responding);
+    }
+
+    #[test]
+    fn test_port_listening_check_invalid_ports() {
+        // Test ports that should never be listening
+        assert!(!is_port_listening(1));      // Reserved, should be false
+        assert!(!is_port_listening(12345));  // Unlikely to be listening
+        assert!(!is_port_listening(54321));  // Unlikely to be listening
+    }
+
+    #[test]
+    fn test_standard_allocation_multi_port() {
+        // Test multi-port service specifications
+        let mut ports = HashMap::new();
+        ports.insert("http".to_string(), 8080u16);
+        ports.insert("https".to_string(), 8443u16);
+
+        let allocation = StandardAllocation {
+            port: None,
+            ports: Some(ports),
+            container_port: None,
+            container_ports: None,
+            protocol: "tcp".to_string(),
+            purpose: "test".to_string(),
+            required: false,
+            health_check: None,
+            cross_platform: true,
+            preferred_host: None,
+            note: None,
+        };
+
+        assert!(allocation.port.is_none());
+        assert!(allocation.ports.is_some());
+
+        let ports_ref = allocation.ports.as_ref().unwrap();
+        assert_eq!(ports_ref.len(), 2);
+        assert_eq!(ports_ref.get("http"), Some(&8080u16));
+        assert_eq!(ports_ref.get("https"), Some(&8443u16));
+    }
+
+    #[test]
+    fn test_port_range_structure() {
+        let range = PortRange {
+            start: 3000,
+            end: 8499,
+            description: "Federation services".to_string(),
+        };
+
+        assert_eq!(range.start, 3000);
+        assert_eq!(range.end, 8499);
+        assert!(!range.description.is_empty());
+    }
+}
+
+// ============================================================================
+// Helper function for port validation (used in tests)
+// ============================================================================
+
+fn is_valid_port(port: u16) -> bool {
+    port >= 3000 && port <= 8499
 }

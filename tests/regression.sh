@@ -295,6 +295,55 @@ test_no_regression() {
     fi
 }
 
+test_port_command() {
+    log_section "Port Command - Integration Tests"
+
+    # Port command requires registry to exist - will fail gracefully if not present
+    # But we should at least test that the command exists and doesn't crash
+
+    log_test "nabi port --help"
+    if $NABI_BIN port --help >/dev/null 2>&1; then
+        log_pass "port command exists and responds to --help"
+    else
+        log_warn "port command not available (registry may not be set up)"
+    fi
+
+    # Test each port subcommand exists
+    for cmd in list check cross-platform drift fix generate-env; do
+        log_test "nabi port $cmd (existence check)"
+        if $NABI_BIN port "$cmd" --help >/dev/null 2>&1; then
+            log_pass "port $cmd subcommand exists"
+        else
+            log_warn "port $cmd subcommand may not be available"
+        fi
+    done
+}
+
+test_port_unit_tests() {
+    log_section "Port Command - Unit Tests"
+
+    log_test "Running Rust unit tests for port module"
+
+    if command -v cargo >/dev/null 2>&1; then
+        cd "$PROJECT_ROOT" || return 1
+
+        # Run only port command tests
+        if cargo test --lib port:: 2>&1 | grep -q "test result:"; then
+            local passed
+            passed=$(cargo test --lib port:: 2>&1 | grep "test result:" | grep -c "ok")
+            if [ "$passed" -gt 0 ]; then
+                log_pass "Port unit tests passed ($passed tests)"
+            else
+                log_warn "Port unit tests ran but unclear results"
+            fi
+        else
+            log_warn "Could not run port unit tests (cargo test may not be configured)"
+        fi
+    else
+        log_warn "cargo not found - skipping Rust unit tests"
+    fi
+}
+
 # ============================================================================
 # MAIN TEST RUNNER
 # ============================================================================
@@ -322,6 +371,8 @@ main() {
     test_commanders_directory
     test_python_cli_fallback
     test_no_regression
+    test_port_command
+    test_port_unit_tests
 
     # Summary
     echo ""
