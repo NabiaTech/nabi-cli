@@ -319,9 +319,17 @@ fn list_tmux_panes(session: &str, window: &str, format: &str) -> Result<()> {
 
 /// Send message + Enter as atomic operation to target pane
 ///
-/// Executes: tmux send-keys -t <pane> <message> Enter
-/// The key insight is that both arguments are passed in a single send-keys call,
-/// preventing the race condition where Enter could be sent before text is fully processed.
+/// Implements robust pane state handling:
+/// 1. Verify foreground process is a shell (not vim/less/REPL/etc)
+/// 2. Clear any continuation state (PS2 prompt from unclosed quotes/parens/etc)
+/// 3. Send message literally (avoiding interpretation issues)
+/// 4. Terminate with carriage return (not "Enter" key name)
+///
+/// This pattern handles all four common failure modes:
+/// - Pane in TUI app (vim, less, python REPL, top) → tries C-c to recover
+/// - Unclosed quote/paren/backslash → cleared by C-c
+/// - Special characters/backslashes misinterpreted → fixed by -l flag
+/// - Enter key timing issues → fixed by using C-m (carriage return)
 fn handle_send_prompt(pane: &str, message: &str, delay: u64) -> Result<()> {
     // Validate pane format (basic sanity check)
     if pane.is_empty() {
@@ -332,19 +340,61 @@ fn handle_send_prompt(pane: &str, message: &str, delay: u64) -> Result<()> {
         anyhow::bail!("Message cannot be empty");
     }
 
-    // Execute: tmux send-keys -t <pane> <message> Enter
-    let output = Command::new("tmux")
-        .args(&["send-keys", "-t", pane, message, "Enter"])
+    // Step 1: Verify we're at a shell; if not, try to recover
+    let fg_output = Command::new("tmux")
+        .args(&["display-message", "-p", "-t", pane, "#{pane_current_command}"])
         .output()
         .context(format!(
-            "Failed to execute tmux send-keys for pane '{}'",
+            "Failed to check foreground process for pane '{}'",
             pane
         ))?;
 
-    // Check for errors
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("Tmux send-keys failed: {}", stderr.trim());
+    let fg_process = String::from_utf8_lossy(&fg_output.stdout).trim().to_string();
+    let is_shell = matches!(fg_process.as_str(), "zsh" | "bash" | "fish" | "sh" | "ksh");
+
+    if !is_shell {
+        // Try to break out of TUI app; don't loop forever, just one attempt
+        let _ = Command::new("tmux")
+            .args(&["send-keys", "-t", pane, "C-c"])
+            .output();
+        thread::sleep(Duration::from_millis(40));
+    }
+
+    // Step 2: Ensure clean prompt (kill any partial line / PS2 continuation)
+    let _ = Command::new("tmux")
+        .args(&["send-keys", "-t", pane, "C-c"])
+        .output();
+    thread::sleep(Duration::from_millis(20));
+
+    // Step 3: Send literally (uses -l flag), then carriage return (C-m, not "Enter")
+    let send_output = Command::new("tmux")
+        .args(&["send-keys", "-t", pane, "-l", message])
+        .output()
+        .context(format!(
+            "Failed to send message to pane '{}'",
+            pane
+        ))?;
+
+    if !send_output.status.success() {
+        let stderr = String::from_utf8_lossy(&send_output.stderr);
+        anyhow::bail!("Tmux send-keys (text) failed: {}", stderr.trim());
+    }
+
+    // Small debounce between text and carriage return
+    thread::sleep(Duration::from_millis(15));
+
+    // Step 4: Send carriage return to execute
+    let cr_output = Command::new("tmux")
+        .args(&["send-keys", "-t", pane, "C-m"])
+        .output()
+        .context(format!(
+            "Failed to send carriage return to pane '{}'",
+            pane
+        ))?;
+
+    if !cr_output.status.success() {
+        let stderr = String::from_utf8_lossy(&cr_output.stderr);
+        anyhow::bail!("Tmux send-keys (carriage return) failed: {}", stderr.trim());
     }
 
     // Wait for specified delay to let tmux process the command
@@ -352,7 +402,7 @@ fn handle_send_prompt(pane: &str, message: &str, delay: u64) -> Result<()> {
         thread::sleep(Duration::from_millis(delay));
     }
 
-    println!("✓ Execution complete in pane: {}", pane);
+    println!("✓ Execution complete in pane: {} (fg: {})", pane, fg_process);
     Ok(())
 }
 
