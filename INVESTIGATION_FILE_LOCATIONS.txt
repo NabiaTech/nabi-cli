@@ -1,0 +1,142 @@
+XDG MIGRATION INVESTIGATION - CRITICAL FILE LOCATIONS
+========================================================
+
+INVESTIGATION REPORTS (in this directory):
+- XDG_MIGRATION_INVESTIGATION_2025-11-05.md        [Full 9-section analysis, 400+ lines]
+- XDG_MIGRATION_QUICK_SUMMARY.md                  [Quick reference, critical issues]
+- INVESTIGATION_FILE_LOCATIONS.txt                [This file]
+
+RUST SOURCE CODE (Analyzed):
+- /Users/tryk/nabia/core/nabi-cli/src/paths.rs (139 lines)
+  STATUS: ✅ Fully XDG-compliant, proper env var precedence
+  
+- /Users/tryk/nabia/core/nabi-cli/src/commands/port.rs (664 lines)
+  STATUS: ❌ BROKEN - Lines 189-209 missing XDG_STATE_HOME fallback
+  PROBLEM: Hard-coded ~/.config/nabi path, doesn't check actual location
+
+ACTUAL PORT REGISTRY (Current Location):
+- /Users/tryk/.local/state/nabi/governance/port-registry.json      ✅ EXISTS
+  Size: 23,238 bytes (686 lines)
+  Last modified: Oct 19, 14:46
+  Format: Valid JSON with platform configs for [wsl, macos, rpi]
+  
+- /Users/tryk/.local/state/nabi/port-registry.json                  ✅ EXISTS (backup)
+  Same content, located at root of state directory
+
+EXPECTED BY CODE (But doesn't exist):
+- /Users/tryk/.config/nabi/governance/port-registry.json            ❌ MISSING
+  This is where port.rs expects to find the file
+
+SYMLINK HUB (Navigation):
+- /Users/tryk/.nabi/config@   → /Users/tryk/.config/nabi
+- /Users/tryk/.nabi/state@    → /Users/tryk/.local/state/nabi
+- /Users/tryk/.nabi/data@     → /Users/tryk/.local/share/nabi
+- /Users/tryk/.nabi/venvs@    → /Users/tryk/.cache/nabi/venvs
+
+MIGRATION ARTIFACTS & EVIDENCE:
+
+1. Migration Audit Report:
+   - /Users/tryk/.local/state/nabi/nabi_migration_breakages.json    ✅ FOUND
+   Date: Nov 2, 11:02
+   Content: Detailed inventory of 2 missing bridges, 4 medium-severity issues
+
+2. Incomplete State Machine:
+   - /Users/tryk/.config/nabi/.config-state/.consolidation-phase    ✅ FOUND
+   Content: "inventory" (suggests incomplete state tracking)
+   
+   - /Users/tryk/.config/nabi/.sync-state/                          ✅ EXISTS (empty)
+
+3. Backup/Recovery Artifacts:
+   - /Users/tryk/.local/state/nabi/backups/nabi-data/scripts/
+     ├── create-xdg-structure.sh
+     ├── migrate-to-xdg.sh              [Scripts executed but incomplete]
+     ├── validate-xdg-migration.sh
+     └── emergency-rollback.sh
+     
+   - /Users/tryk/.local/state/nabi/backups/nabi-data/manifests.backup.1760956236/
+     ├── system.manifest.json
+     └── eternal-agents.manifest.json
+
+4. Missing Operational Bridges:
+   - /Users/tryk/.config/nabi/lib/nabi-docs.sh                      ❌ MISSING
+     (Should be restored from backups)
+     
+   - /Users/tryk/.config/nabi/lib/manifest-generator.py             ❌ MISSING
+     (Located at: /Users/tryk/.local/state/nabi/backups/nabi-data/scripts/)
+     
+   - /Users/tryk/.config/nabi/lib/manifest-validator.py             ❌ MISSING
+     (Located at: /Users/tryk/.local/state/nabi/backups/nabi-data/scripts/)
+
+5. Operational/Working Components:
+   - /Users/tryk/.config/nabi/lib/nabi-port.sh                      ✅ WORKING
+   - /Users/tryk/.config/nabi/lib/validate_substrate.py             ✅ WORKING
+   - /Users/tryk/.config/nabi/lib/remediate_substrate.py            ✅ WORKING
+   - /Users/tryk/.config/nabi/lib/adapter_router.py                 ✅ WORKING
+   - /Users/tryk/.config/nabi/lib/run_health_check.sh               ✅ WORKING
+
+ENVIRONMENT VARIABLES:
+- NABI_HOME=/Users/tryk/.config/nabi  (Set, masks the problem)
+
+CRITICAL PATH MISMATCH:
+
+Code Path Resolution (port.rs:189-209):
+  1. Check NABI_HOME/governance/port-registry.json
+     → /Users/tryk/.config/nabi/governance/port-registry.json    [doesn't exist]
+  2. Fallback to ~/.config/nabi/governance/port-registry.json
+     → /Users/tryk/.config/nabi/governance/port-registry.json    [doesn't exist]
+  3. ERROR: Registry not found
+     SHOULD check: /Users/tryk/.local/state/nabi/governance/port-registry.json ✅
+
+EVIDENCE OF "MULTI" PLATFORM:
+
+Searched entire port-registry.json:
+- Platform configs: ["wsl", "macos", "rpi"]  (NO "multi")
+- Semantic "multi" references: 2 mentions of "multi-client" and "multi-node"
+- State machine artifact: .consolidation-phase contains "inventory"
+- CONCLUSION: "multi" was a planned aggregation config, never implemented
+
+MIGRATION TIMELINE (Reconstructed):
+
+Oct 18   → XDG migration planning begins
+Oct 23   → Symlinks created (~/.nabi/@config, @state, @data, @venvs)
+Oct 25   → Port registry moved to ~/.local/state/nabi/governance/
+Oct 26   → Hooks backup created (pre-migration state)
+Oct 28   → Config-state directory initialized with consolidation phase
+Oct 29   → nabi_migration_breakages.json audit created
+Nov 02   → Migration audit finalized
+Nov 05   → CURRENT: Incomplete, fragile, regression-prone state
+
+REGRESSION RISK: CRITICAL
+
+If NABI_HOME is unset (WSL, RPi, CI/CD environments):
+  $ unset NABI_HOME
+  $ nabi port list
+  Error: Registry not found at /Users/tryk/.config/nabi/governance/port-registry.json
+
+The code doesn't check XDG_STATE_HOME as fallback.
+
+RECOMMENDATIONS (Priority Order):
+
+1. FIX port.rs:189-209 to use proper XDG fallback chain:
+   NABI_HOME → XDG_STATE_HOME → XDG_CONFIG_HOME
+
+2. DECIDE registry location:
+   - If git-managed config: Move to ~/.config/nabi/governance/
+   - If runtime state: Update code to check STATE_HOME first
+
+3. RESTORE missing bridges from backups:
+   - nabi-docs.sh
+   - manifest-generator.py
+   - manifest-validator.py
+
+4. COMPLETE hook migration to ~/nabia/core/hooks/src/
+
+5. CLEAN UP state machine artifacts:
+   - Investigate .consolidation-phase
+   - Complete or remove incomplete state
+
+6. VALIDATE cross-platform consistency:
+   - Test on WSL, macOS, RPi
+   - Test with NABI_HOME unset
+   - Test with custom XDG env vars
+

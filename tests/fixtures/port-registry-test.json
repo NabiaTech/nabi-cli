@@ -1,0 +1,134 @@
+{
+  "version": "1.0",
+  "updated": "2025-11-05",
+  "schema_version": "1.0",
+  "description": "Test Port Registry for Unit and Integration Tests",
+  "metadata": {
+    "created_by": "test-suite",
+    "purpose": "Testing port command implementation",
+    "validation_tool": "port-validate",
+    "last_reconciliation": "2025-11-05",
+    "reconciliation_agent": "nabi-port-validator"
+  },
+  "port_ranges": {
+    "federation": {
+      "start": 3000,
+      "end": 8499,
+      "description": "Federation services and development"
+    },
+    "reserved": {
+      "start": 1,
+      "end": 1023,
+      "description": "System reserved ports"
+    }
+  },
+  "standard_allocations": {
+    "surrealdb": {
+      "port": 8004,
+      "protocol": "tcp",
+      "purpose": "SurrealDB primary instance",
+      "required": true,
+      "cross_platform": true
+    },
+    "surrealdb_index": {
+      "port": 8284,
+      "protocol": "tcp",
+      "purpose": "SurrealDB indexing instance",
+      "required": true,
+      "cross_platform": true
+    },
+    "coordination": {
+      "port": 8002,
+      "protocol": "tcp",
+      "purpose": "Service coordination",
+      "required": true,
+      "cross_platform": true,
+      "note": "RPi may use 8001"
+    },
+    "loki": {
+      "port": 3100,
+      "protocol": "http+sse",
+      "purpose": "Log aggregation and search",
+      "required": false,
+      "cross_platform": true,
+      "note": "WSL uses 3101 for isolation"
+    },
+    "prometheus": {
+      "port": 9090,
+      "protocol": "http",
+      "purpose": "Metrics collection",
+      "required": false,
+      "cross_platform": true
+    },
+    "grafana": {
+      "port": 3000,
+      "protocol": "http",
+      "purpose": "Metrics visualization",
+      "required": false,
+      "cross_platform": true
+    }
+  },
+  "platform_configs": {
+    "macos": {
+      "hostname": "macbook",
+      "tailscale_hostname": "macbook.tail1234.ts.net",
+      "external_ip": "192.168.1.100",
+      "role": "primary-workstation",
+      "services": {
+        "surrealdb": {
+          "enabled": true,
+          "port": 8004,
+          "endpoint": "http://localhost:8004"
+        },
+        "loki": {
+          "enabled": false,
+          "port": 3100
+        },
+        "coordination": {
+          "enabled": true,
+          "port": 8002
+        }
+      }
+    },
+    "wsl": {
+      "hostname": "wsl-ubuntu",
+      "tailscale_hostname": "wsl-ubuntu.tail1234.ts.net",
+      "external_ip": null,
+      "role": "development",
+      "services": {
+        "surrealdb": {
+          "enabled": true,
+          "port": 8004
+        },
+        "loki": {
+          "enabled": true,
+          "port": 3101
+        },
+        "coordination": {
+          "enabled": true,
+          "port": 8002
+        }
+      }
+    },
+    "rpi": {
+      "hostname": "raspberry-pi",
+      "tailscale_hostname": "rpi.tail1234.ts.net",
+      "external_ip": "192.168.1.50",
+      "role": "gateway",
+      "services": {
+        "surrealdb": {
+          "enabled": true,
+          "port": 8004
+        },
+        "loki": {
+          "enabled": true,
+          "port": 3100
+        },
+        "coordination": {
+          "enabled": true,
+          "port": 8001
+        }
+      }
+    }
+  }
+}

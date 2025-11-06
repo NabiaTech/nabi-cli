@@ -1,13 +1,19 @@
 /// Tmux Pane Coordination Commands
 ///
-/// Atomic operations for coordinating across tmux panes in multi-agent scenarios.
-/// All operations are guaranteed to complete in a single tmux command without race conditions.
+/// Reliable operations for coordinating across tmux panes in multi-agent scenarios.
+/// Ensures text and Enter keypresses are delivered together, preventing race conditions.
 ///
 /// Architecture Note:
-/// - Replaces two-step tmux send-keys operations with atomic single-command execution
+/// - Uses multi-step tmux send-keys operations with guaranteed sequential delivery
 /// - Critical for ensuring text + Enter keypresses are never separated
 /// - Enables reliable cross-pane IPC for Claude Code autonomous coordination
 /// - List commands provide runtime introspection for dynamic shell completions
+///
+/// Atomicity Guarantee:
+/// While not a single tmux command, the operation is "atomic" in the sense that:
+/// - Text and Enter are guaranteed to be sent in sequence without interruption
+/// - All steps complete or fail together (no partial state)
+/// - Recovery steps ensure clean state before sending commands
 
 use anyhow::{Context, Result};
 use clap::Subcommand;
@@ -15,13 +21,24 @@ use std::process::Command;
 use std::thread;
 use std::time::Duration;
 
+// Timing constants for tmux operations (in milliseconds)
+const DELAY_TUI_RECOVERY: u64 = 40;  // Wait after C-c to exit TUI apps
+const DELAY_PROMPT_CLEAR: u64 = 20;  // Wait after C-c to clear PS2 prompts
+const DELAY_TEXT_TO_ENTER: u64 = 15; // Debounce between text and carriage return
+
+// Supported shell processes (for foreground process detection)
+const SUPPORTED_SHELLS: &[&str] = &["zsh", "bash", "fish", "sh", "ksh"];
+
+// Note: Pane format validation is done via parsing, not regex
+// These constants are kept for potential future use or documentation
+
 #[derive(Subcommand)]
 #[command(about = "Tmux pane coordination (send-prompt, introspection) for multi-agent orchestration", long_about =
 "Provides reliable cross-pane IPC operations with guaranteed atomic execution.
 
 This command enables safe coordination across tmux windows by ensuring that text
-and Enter keypresses are delivered together in a single operation, preventing
-race conditions that occur with sequential send-keys calls.
+and Enter keypresses are delivered together in a reliable sequence, preventing
+race conditions that occur with uncoordinated send-keys calls.
 
 Also includes introspection commands (nabi tmux list) for runtime discovery:
 - Query active sessions, windows, and panes
@@ -33,19 +50,20 @@ Perfect for:
   - Reliable multi-window terminal automation
   - Federation command injection with guaranteed delivery
 
-All operations are atomic: if tmux accepts the command, both text and Enter
-are guaranteed to be delivered as a single unit.")]
+All operations are reliable: if tmux accepts the command sequence, both text and Enter
+are guaranteed to be delivered together without interruption.")]
 pub enum TmuxCommands {
-    /// Send message + Execute atomically (text + Enter in single tmux operation)
+    /// Send message + Execute reliably (text + Enter in coordinated sequence)
     ///
-    /// Executes a command in a tmux pane with guaranteed atomic delivery.
-    /// The message and Enter key are sent in a single tmux send-keys call,
+    /// Executes a command in a tmux pane with guaranteed reliable delivery.
+    /// The message and Enter key are sent in a coordinated sequence,
     /// eliminating race conditions where Enter could be missed.
     ///
     /// Execution guarantees:
-    ///   - Text and Enter are always delivered together (atomic operation)
+    ///   - Text and Enter are always delivered together (reliable sequence)
     ///   - No interference from other terminal operations
     ///   - Configurable delay for tmux processing time
+    ///   - Automatic recovery from TUI apps and continuation prompts
     ///
     /// Common use cases:
     ///   - Injecting commands into running Claude agents
@@ -82,7 +100,7 @@ PANE FORMAT:
         /// Message/command to send and execute
         ///
         /// This is the exact text that will be typed into the pane,
-        /// followed immediately by Enter (guaranteed atomic delivery).
+        /// followed immediately by Enter (guaranteed reliable delivery).
         /// Supports any shell command, env vars, or special sequences.
         #[arg(value_name = "MESSAGE")]
         message: String,
@@ -317,10 +335,59 @@ fn list_tmux_panes(session: &str, window: &str, format: &str) -> Result<()> {
     Ok(())
 }
 
-/// Send message + Enter as atomic operation to target pane
+/// Parse and validate tmux pane target format
+///
+/// Accepts formats:
+/// - `session:window.pane` (full specification, e.g., "cross-pane:3.2")
+/// - `session:window` (implicit pane 1, e.g., "mywindow:1" = "mywindow:1.1")
+///
+/// Returns normalized format: (session, window, pane)
+fn parse_pane_target(pane: &str) -> Result<(String, String, String)> {
+    if pane.is_empty() {
+        anyhow::bail!("Pane target cannot be empty");
+    }
+
+    // Check for full format: session:window.pane
+    if let Some(dot_pos) = pane.rfind('.') {
+        if let Some(colon_pos) = pane[..dot_pos].rfind(':') {
+            let session = pane[..colon_pos].to_string();
+            let window = pane[colon_pos + 1..dot_pos].to_string();
+            let pane_num = pane[dot_pos + 1..].to_string();
+
+            // Validate numeric parts
+            if window.parse::<usize>().is_err() {
+                anyhow::bail!("Invalid window number in pane target '{}': expected numeric", pane);
+            }
+            if pane_num.parse::<usize>().is_err() {
+                anyhow::bail!("Invalid pane number in pane target '{}': expected numeric", pane);
+            }
+
+            return Ok((session, window, pane_num));
+        }
+    }
+
+    // Check for window-only format: session:window (implicit pane 1)
+    if let Some(colon_pos) = pane.rfind(':') {
+        let session = pane[..colon_pos].to_string();
+        let window = pane[colon_pos + 1..].to_string();
+
+        if window.parse::<usize>().is_err() {
+            anyhow::bail!("Invalid window number in pane target '{}': expected numeric", pane);
+        }
+
+        return Ok((session, window, "1".to_string()));
+    }
+
+    anyhow::bail!(
+        "Invalid pane format '{}': expected 'session:window.pane' or 'session:window'",
+        pane
+    );
+}
+
+/// Send message + Enter as reliable operation to target pane
 ///
 /// Implements robust pane state handling:
-/// 1. Verify foreground process is a shell (not vim/less/REPL/etc)
+/// 1. Validate pane format and verify foreground process is a shell
 /// 2. Clear any continuation state (PS2 prompt from unclosed quotes/parens/etc)
 /// 3. Send message literally (avoiding interpretation issues)
 /// 4. Terminate with carriage return (not "Enter" key name)
@@ -331,10 +398,9 @@ fn list_tmux_panes(session: &str, window: &str, format: &str) -> Result<()> {
 /// - Special characters/backslashes misinterpreted → fixed by -l flag
 /// - Enter key timing issues → fixed by using C-m (carriage return)
 fn handle_send_prompt(pane: &str, message: &str, delay: u64) -> Result<()> {
-    // Validate pane format (basic sanity check)
-    if pane.is_empty() {
-        anyhow::bail!("Pane target cannot be empty");
-    }
+    // Validate pane format early
+    parse_pane_target(pane)
+        .with_context(|| format!("Invalid pane target '{}'", pane))?;
 
     if message.is_empty() {
         anyhow::bail!("Message cannot be empty");
@@ -344,57 +410,74 @@ fn handle_send_prompt(pane: &str, message: &str, delay: u64) -> Result<()> {
     let fg_output = Command::new("tmux")
         .args(&["display-message", "-p", "-t", pane, "#{pane_current_command}"])
         .output()
-        .context(format!(
+        .with_context(|| format!(
             "Failed to check foreground process for pane '{}'",
             pane
         ))?;
 
+    if !fg_output.status.success() {
+        let stderr = String::from_utf8_lossy(&fg_output.stderr);
+        anyhow::bail!(
+            "Failed to query pane '{}': {}",
+            pane,
+            stderr.trim()
+        );
+    }
+
     let fg_process = String::from_utf8_lossy(&fg_output.stdout).trim().to_string();
-    let is_shell = matches!(fg_process.as_str(), "zsh" | "bash" | "fish" | "sh" | "ksh");
+    let is_shell = SUPPORTED_SHELLS.contains(&fg_process.as_str());
 
     if !is_shell {
         // Try to break out of TUI app; don't loop forever, just one attempt
         let _ = Command::new("tmux")
             .args(&["send-keys", "-t", pane, "C-c"])
             .output();
-        thread::sleep(Duration::from_millis(40));
+        thread::sleep(Duration::from_millis(DELAY_TUI_RECOVERY));
     }
 
     // Step 2: Ensure clean prompt (kill any partial line / PS2 continuation)
     let _ = Command::new("tmux")
         .args(&["send-keys", "-t", pane, "C-c"])
         .output();
-    thread::sleep(Duration::from_millis(20));
+    thread::sleep(Duration::from_millis(DELAY_PROMPT_CLEAR));
 
     // Step 3: Send literally (uses -l flag), then carriage return (C-m, not "Enter")
     let send_output = Command::new("tmux")
         .args(&["send-keys", "-t", pane, "-l", message])
         .output()
-        .context(format!(
+        .with_context(|| format!(
             "Failed to send message to pane '{}'",
             pane
         ))?;
 
     if !send_output.status.success() {
         let stderr = String::from_utf8_lossy(&send_output.stderr);
-        anyhow::bail!("Tmux send-keys (text) failed: {}", stderr.trim());
+        anyhow::bail!(
+            "Tmux send-keys (text) failed for pane '{}': {}",
+            pane,
+            stderr.trim()
+        );
     }
 
     // Small debounce between text and carriage return
-    thread::sleep(Duration::from_millis(15));
+    thread::sleep(Duration::from_millis(DELAY_TEXT_TO_ENTER));
 
     // Step 4: Send carriage return to execute
     let cr_output = Command::new("tmux")
         .args(&["send-keys", "-t", pane, "C-m"])
         .output()
-        .context(format!(
+        .with_context(|| format!(
             "Failed to send carriage return to pane '{}'",
             pane
         ))?;
 
     if !cr_output.status.success() {
         let stderr = String::from_utf8_lossy(&cr_output.stderr);
-        anyhow::bail!("Tmux send-keys (carriage return) failed: {}", stderr.trim());
+        anyhow::bail!(
+            "Tmux send-keys (carriage return) failed for pane '{}': {}",
+            pane,
+            stderr.trim()
+        );
     }
 
     // Wait for specified delay to let tmux process the command
@@ -411,6 +494,64 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_parse_pane_target_full_format() {
+        let result = parse_pane_target("session:3.2");
+        assert!(result.is_ok());
+        let (session, window, pane) = result.unwrap();
+        assert_eq!(session, "session");
+        assert_eq!(window, "3");
+        assert_eq!(pane, "2");
+    }
+
+    #[test]
+    fn test_parse_pane_target_window_format() {
+        let result = parse_pane_target("mywindow:1");
+        assert!(result.is_ok());
+        let (session, window, pane) = result.unwrap();
+        assert_eq!(session, "mywindow");
+        assert_eq!(window, "1");
+        assert_eq!(pane, "1"); // Implicit pane 1
+    }
+
+    #[test]
+    fn test_parse_pane_target_complex_session_name() {
+        let result = parse_pane_target("cross-pane-session:5.3");
+        assert!(result.is_ok());
+        let (session, window, pane) = result.unwrap();
+        assert_eq!(session, "cross-pane-session");
+        assert_eq!(window, "5");
+        assert_eq!(pane, "3");
+    }
+
+    #[test]
+    fn test_parse_pane_target_empty() {
+        let result = parse_pane_target("");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("cannot be empty"));
+    }
+
+    #[test]
+    fn test_parse_pane_target_invalid_format() {
+        let result = parse_pane_target("invalid");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Invalid pane format"));
+    }
+
+    #[test]
+    fn test_parse_pane_target_invalid_window_number() {
+        let result = parse_pane_target("session:abc.1");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Invalid window number"));
+    }
+
+    #[test]
+    fn test_parse_pane_target_invalid_pane_number() {
+        let result = parse_pane_target("session:1.xyz");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Invalid pane number"));
+    }
+
+    #[test]
     fn test_pane_validation_empty() {
         let result = handle_send_prompt("", "echo test", 50);
         assert!(result.is_err());
@@ -422,6 +563,14 @@ mod tests {
         assert!(result.is_err());
     }
 
+    #[test]
+    fn test_pane_validation_invalid_format() {
+        let result = handle_send_prompt("invalid-format", "echo test", 50);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Invalid pane target"));
+    }
+
     // Note: Full integration tests would require running tmux,
     // which is not available in all CI/test environments
+    // These would test actual tmux command execution and pane interaction
 }

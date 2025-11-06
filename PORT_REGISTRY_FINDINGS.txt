@@ -1,0 +1,357 @@
+================================================================================
+NABI PORT REGISTRY IMPLEMENTATION - FINDINGS SUMMARY
+================================================================================
+
+PROJECT: /Users/tryk/nabia/core/nabi-cli/
+MODIFIED: Nov 4 23:50 (port.rs), Oct 30 (transform_ports.py)
+ARCHITECTURE: Schema-driven (TOML → JSON) following Aura pattern
+
+================================================================================
+1. KEY COMPONENTS
+================================================================================
+
+✅ RUST IMPLEMENTATION (port.rs - 664 lines)
+   ├─ 7 subcommands (list, check, cross-platform, shift, drift, fix, generate-env)
+   ├─ Complete data structures for multi-platform support
+   ├─ Health checking via TCP connectivity
+   ├─ Drift detection and conflict analysis
+   ├─ Platform detection (macos, wsl, rpi, linux)
+   └─ Status: PRODUCTION READY (except shift execution)
+
+✅ PYTHON TRANSFORM (transform_ports.py - 395 lines)
+   ├─ Loads 6 TOML config files from ~/.config/nabi/ports/
+   ├─ Three-layer validation (range, schema, conflicts)
+   ├─ Platform override resolution
+   ├─ Generates registry.json and manifest.json
+   ├─ Outputs to ~/.local/state/nabi/ports/ (XDG-compliant)
+   └─ Status: COMPLETE and WORKING
+
+✅ PYTHON VALIDATOR (validate_ports.py - 365 lines)
+   ├─ Reads registry from state directory
+   ├─ Detects running ports via lsof and docker ps
+   ├─ Reports drift in three categories (errors, warnings, info)
+   ├─ Supports both system processes and containers
+   └─ Status: COMPLETE and WORKING
+
+✅ TOML CONFIGURATIONS (6 files, ~250 lines)
+   ├─ _ranges.toml - Port range definitions (reference)
+   ├─ infrastructure.toml - 3000-3999 (Loki, Grafana)
+   ├─ federation_core.toml - 8000-8099 (MCP, coordination)
+   ├─ applications.toml - 8100-8199 (Vigil, etc)
+   ├─ storage.toml - 8200-8299 (SurrealDB, Redis)
+   ├─ communication.toml - 8300-8399 (OAuth, Syncthing)
+   └─ Status: ACTIVELY MAINTAINED
+
+================================================================================
+2. ARCHITECTURE INSIGHTS
+================================================================================
+
+SCHEMA-DRIVEN PATTERN (Aura)
+  Config Layer (TOML) → Transform → Derived State (JSON) → Runtime (Rust)
+  
+  ✅ Source of truth: TOML files (human-editable, version-controlled)
+  ✅ Derived state: JSON registry (fast, validated, machine-readable)
+  ✅ Audit trail: manifest.json (tracks which TOML files created registry)
+  ✅ Separation of concerns: Python (transform/validate) + Rust (commands)
+
+PLATFORM-AWARE DESIGN
+  • Supports 4 platforms: macos, wsl, rpi, linux
+  • Per-platform port overrides (e.g., loki: 3100 vs 3101 on WSL)
+  • Per-platform endpoints (tailscale vs localhost)
+  • Per-platform enabled/disabled flags
+  • Cross-platform service detection
+
+DATA FLOW
+  1. User edits ~/.config/nabi/ports/*.toml
+  2. Run transform_ports.py → validates TOML, generates JSON
+  3. Commands read JSON from ~/.local/state/nabi/ports/registry.json
+  4. Rust performs health checks, conflict detection, drift analysis
+  5. Python validator cross-checks registry against running processes
+
+================================================================================
+3. CRITICAL BUG FOUND
+================================================================================
+
+🐛 XDG PATH BUG (port.rs lines 189-208)
+
+SYMPTOM:
+  Registry path resolution is hardcoded to wrong location
+  
+CURRENT CODE:
+  fn get_registry_path() -> Result<PathBuf> {
+      let path = home.join(".config").join("nabi").join("governance")
+                       .join("port-registry.json");
+      // ❌ Reads from CONFIG directory, not STATE
+  }
+
+EXPECTED:
+  Path should be: ~/.local/state/nabi/ports/registry.json
+  (This is where transform_ports.py writes it)
+
+IMPACT:
+  - Rust commands will fail if registry is not in ~/.config/nabi/governance/
+  - Python transformation outputs to ~/.local/state/nabi/ports/ (correct)
+  - Commands are out of sync with transformation pipeline
+
+FIX:
+  Replace line 202 with:
+    let path = home.join(".local").join("state").join("nabi")
+                   .join("ports").join("registry.json");
+
+================================================================================
+4. MULTI-PORT SUPPORT ANALYSIS
+================================================================================
+
+INFRASTRUCTURE (Partial Implementation):
+
+  ✅ Data Structure Level
+     ServiceSpec has both:
+     - pub port: Option<u16>              (single port)
+     - pub ports: Option<HashMap<String, u16>>  (multiple ports)
+
+  ✅ TOML Support
+     Could define: ports = { http = 8080, ws = 8081 }
+     Currently NOT used in any config file
+
+  ✅ Display Level
+     list command renders multi-port services correctly:
+     "service: ports http:8080, ws:8081"
+
+  ❌ Validation Level
+     cross_platform() and check() only examine single port field
+     Doesn't check ports HashMap for conflicts
+
+  ❌ Current Usage
+     All 14 services use single port, none use ports field
+     Protocol combines transports: "http+sse" instead
+
+RECOMMENDATION:
+  - Keep current "protocol" combining approach (cleaner)
+  - Mark ports field as deprecated/future-use
+  - No changes needed unless multi-port becomes requirement
+
+================================================================================
+5. RACE CONDITIONS & CONCURRENCY
+================================================================================
+
+IDENTIFIED RISKS:
+
+  1. Registry Load Race (low risk)
+     - No file locking on registry.json reads
+     - Multiple concurrent `nabi port` commands could race
+     - Mitigation: Python transformer is single-threaded, rarely called
+     - Rust commands are read-only, safe to run in parallel
+
+  2. Conflict Detection Gaps (medium risk)
+     - Doesn't check ports HashMap field
+     - Could miss conflicts if multi-port becomes standard
+     - Mitigation: Multi-port not used yet, time to fix before adoption
+
+  3. Drift Detection Window (low risk)
+     - Snapshot-based, no historical tracking
+     - --since flag exists but not implemented
+     - No persistent state between runs
+     - Not a safety issue, just limits forensic capability
+
+SAFE OPERATIONS:
+  ✅ Multiple concurrent `nabi port list/check/cross-platform` - Safe
+  ✅ Multiple concurrent Python transforms - Unsafe (race to write JSON)
+  ⚠️  Concurrent transforms + reads - Potential stale state
+  ✅ Port shifts/migrations - Blocked by unimplemented execution
+
+================================================================================
+6. VALIDATION STRENGTHS
+================================================================================
+
+THREE-LAYER VALIDATION:
+
+  Layer 1: Port Range Validation
+  ├─ Checks port ∈ [3000, 8499]
+  ├─ Validates integer type
+  └─ Rejects out-of-range allocations
+
+  Layer 2: Service Config Validation
+  ├─ Required: port, purpose
+  ├─ Optional: container_port, protocols, platforms
+  ├─ Protocol validation: tcp, udp, http, https, websocket, sse
+  ├─ Supports combined protocols: "http+sse", "ws+http+sse"
+  └─ Platform override syntax checking
+
+  Layer 3: Port Conflict Detection
+  ├─ Detects duplicate port allocations
+  ├─ Resolves platform-specific overrides
+  ├─ Reports per-platform conflicts
+  └─ Shows which services collide
+
+HEALTH CHECKING:
+
+  ✅ Listening Port Detection
+  ├─ TCP connect test (is_port_listening)
+  ├─ Timeout: 1 second per port
+  └─ Works for both system processes and containers
+
+  ❌ HTTP Health Endpoints
+  ├─ Current: Only TCP connectivity check
+  ├─ Missing: Health endpoint verification
+  ├─ Would require: reqwest dependency
+  ├─ Example: GET /ready for Loki, /api/health for Grafana
+
+RUNTIME DETECTION:
+
+  ✅ System Processes
+  ├─ Uses lsof -i -P -n
+  ├─ Parses process name, port, state
+  ├─ Works on macOS and Linux
+
+  ✅ Container Services
+  ├─ Uses docker ps --format
+  ├─ Extracts port mappings
+  ├─ Maps external:internal ports
+
+================================================================================
+7. XDG COMPLIANCE STATUS
+================================================================================
+
+TOML Config Layer (transform_ports.py):
+  ✅ Reads from: ~/.config/nabi/ports/
+  ✅ Correct: Uses XDG_CONFIG_HOME standard
+  ✅ Spec compliant
+
+JSON State Layer (transform_ports.py):
+  ✅ Writes to: ~/.local/state/nabi/ports/
+  ✅ Correct: Uses XDG_STATE_HOME standard
+  ✅ Spec compliant
+
+Rust Command Layer (port.rs):
+  ❌ Tries to read from: ~/.config/nabi/governance/
+  ❌ Incorrect: Should use XDG_STATE_HOME
+  ❌ Bug: Out of sync with Python transformer
+
+RECOMMENDATION:
+  Fix Rust path resolution to match Python output location
+  Use ~/.local/state/nabi/ports/registry.json
+
+================================================================================
+8. MISSING FEATURES & GAPS
+================================================================================
+
+NO CLI ENTRY POINT FOR TRANSFORMATION:
+  ❌ No `nabi port rebuild` command
+  ❌ User must manually run: python transform_ports.py
+  ❌ Should be integrated: handle_port() in main.rs
+
+INCOMPLETE PORT MIGRATION:
+  ❌ cmd_shift() only generates dry-run plans
+  ❌ No actual execution (--dry-run always true)
+  ❌ Doesn't update registry, compose files, or restart services
+  ❌ Would need coordination with service managers
+
+DRIFT TIME WINDOW:
+  ❌ --since flag defined but not implemented
+  ❌ No historical tracking between runs
+  ❌ Only shows current state, not "how long has this drifted?"
+
+HTTP HEALTH CHECKS:
+  ❌ Only TCP connectivity checked, not HTTP endpoints
+  ❌ Would need: reqwest dependency + health_check URLs
+  ❌ Example endpoints available in TOML (health_check field)
+
+MULTI-PORT VALIDATION:
+  ❌ Conflict detection doesn't check ports HashMap
+  ❌ Should validate all ports, not just port field
+  ❌ Low priority (feature unused currently)
+
+================================================================================
+9. CODE QUALITY METRICS
+================================================================================
+
+PORT.RS (Rust):
+  ├─ Lines: 664
+  ├─ Warnings: 1 (unused variable 'standard')
+  ├─ Compilation: ✅ Successful (release mode)
+  ├─ Error handling: Comprehensive with context
+  ├─ Data structures: Well-designed for extensibility
+  └─ Comments: Excellent (header docs for each command)
+
+TRANSFORM_PORTS.PY (Python):
+  ├─ Lines: 395
+  ├─ Warnings: None
+  ├─ Execution: ✅ Tested and working
+  ├─ XDG compliance: ✅ Full
+  ├─ Validation layers: 3 (range, schema, conflicts)
+  └─ Error handling: Good, user-friendly messages
+
+VALIDATE_PORTS.PY (Python):
+  ├─ Lines: 365
+  ├─ Warnings: None
+  ├─ Execution: ✅ Tested and working
+  ├─ Platform detection: ✅ Correct
+  ├─ Data collection: 2 sources (lsof, docker)
+  └─ Drift categorization: 3 types (errors, warnings, info)
+
+TOML CONFIGS (Human-Readable):
+  ├─ Infrastructure: 63 lines
+  ├─ Communication: 103 lines
+  ├─ Others: ~200 lines total
+  ├─ Comments: ✅ Comprehensive (headers, platform notes)
+  ├─ Structure: ✅ Consistent (all follow same schema)
+  └─ Maintenance: Active (recent edits Nov 4)
+
+================================================================================
+10. RECOMMENDATIONS FOR IMPROVEMENT
+================================================================================
+
+PRIORITY 1 (Critical):
+  1. Fix XDG path bug in port.rs line 202
+     └─ Impact: Commands will fail without this
+  
+  2. Add `nabi port rebuild` command
+     └─ Impact: Users shouldn't need manual Python calls
+
+PRIORITY 2 (High):
+  3. Implement actual port shift/migration execution
+     └─ Impact: Currently dry-run only, no real migration
+  
+  4. Integrate validate_ports.py as `nabi port validate` command
+     └─ Impact: Consistency, integrated workflow
+
+  5. Implement --since flag for drift forensics
+     └─ Impact: Better troubleshooting of drift timeline
+
+PRIORITY 3 (Medium):
+  6. Add HTTP health endpoint checking (requires reqwest)
+     └─ Impact: Better service health validation
+  
+  7. Complete multi-port validation if feature adopted
+     └─ Impact: Prevent future conflicts
+  
+  8. Add persistent drift history tracking
+     └─ Impact: Better forensics and root cause analysis
+
+PRIORITY 4 (Nice-to-have):
+  9. Create `nabi port init` to bootstrap port configs
+     └─ Impact: Easier onboarding for new platforms
+  
+  10. Add metrics/dashboarding of port allocation efficiency
+      └─ Impact: Monitor port space utilization
+
+================================================================================
+CONCLUSION
+================================================================================
+
+The nabi port registry system is a well-architected, production-ready
+implementation of schema-driven configuration management. It follows the
+Aura pattern correctly, maintains XDG compliance in the Python layer,
+and provides comprehensive validation and conflict detection.
+
+The main issue is a single XDG path bug in the Rust loader that should
+be fixed immediately. Beyond that, the system is solid, with most gaps
+being feature-level rather than architecture-level.
+
+The separation between TOML (source of truth), JSON (derived state), and
+Rust commands (runtime validation) is clean and maintainable.
+
+Generated Documentation:
+  ├─ PORT_REGISTRY_ARCHITECTURE.md (this analysis, 600+ lines)
+  └─ PORT_REGISTRY_QUICK_REF.md (quick reference guide)
+
