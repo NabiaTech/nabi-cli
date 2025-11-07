@@ -495,9 +495,10 @@ fn list_tmux_windows(session: &str, format: &str) -> Result<()> {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct PaneInfo {
-    index: u32,
-    number: u32, // 1-based pane number
-    target: String, // session:window.pane format
+    /// Pane number (1-based, user-friendly - use this in commands)
+    pane: u32,
+    /// Full target format: session:window.pane (uses 0-based index for tmux)
+    target: String,
 }
 
 /// Query tmux for list of panes in a window
@@ -528,16 +529,18 @@ fn list_tmux_panes(session: &str, window: &str, format: &str) -> Result<()> {
         }
 
         if let Ok(idx) = pane_index.parse::<u32>() {
+            // tmux pane_index already respects pane-base-index setting
+            // If user has pane-base-index=1, idx will be 1-based
+            // We use it directly as the pane number
             panes.push(PaneInfo {
-                index: idx,
-                number: idx + 1, // Convert to 1-based
-                target: format!("{}:{}.{}", session, window, idx),
+                pane: idx, // Use tmux's pane_index directly (respects pane-base-index)
+                target: format!("{}:{}.{}", session, window, idx), // tmux uses this index
             });
         }
     }
 
-    // Sort by index for consistent output
-    panes.sort_by(|a, b| a.index.cmp(&b.index));
+    // Sort by pane number for consistent output
+    panes.sort_by(|a, b| a.pane.cmp(&b.pane));
 
     match format {
         "json" => {
@@ -546,13 +549,18 @@ fn list_tmux_panes(session: &str, window: &str, format: &str) -> Result<()> {
             println!("{}", json);
         }
         "id" => {
+            // Extract 0-based index from target (session:window.0)
             for pane in &panes {
-                println!("{}", pane.index);
+                if let Some(dot_pos) = pane.target.rfind('.') {
+                    if let Ok(idx) = pane.target[dot_pos + 1..].parse::<u32>() {
+                        println!("{}", idx);
+                    }
+                }
             }
         }
-        "number" => {
+        "number" | "pane" => {
             for pane in &panes {
-                println!("{}", pane.number);
+                println!("{}", pane.pane);
             }
         }
         _ => {
