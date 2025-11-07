@@ -3,12 +3,13 @@ use clap::{Arg, Args, Command, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::{generate, Shell as CompletionShell};
 use colored::*;
 use std::fs;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process;
 use chrono::Utc;
 use std::fmt;
 use serde::{Deserialize, Serialize};
+use serde_json;
 use sha2::{Digest, Sha256};
 
 mod forge;
@@ -675,6 +676,54 @@ enum HooksCommands {
         #[arg(short, long)]
         stable: bool,
     },
+    /// Debug on-the-fly hooks (tail logs, search, stats, errors)
+    Debug {
+        #[command(subcommand)]
+        action: HookDebugActions,
+    },
+}
+
+#[derive(Subcommand)]
+enum HookDebugActions {
+    /// Tail debug logs for a hook in real-time
+    Tail {
+        /// Hook name to tail logs for
+        hook_name: String,
+    },
+    /// List all debug log files
+    List,
+    /// Search debug logs for a term
+    Search {
+        /// Hook name to search
+        hook_name: String,
+        /// Search term
+        term: String,
+    },
+    /// Show only error logs
+    Errors {
+        /// Hook name to show errors for
+        hook_name: String,
+    },
+    /// Show execution statistics
+    Stats {
+        /// Hook name to show stats for
+        hook_name: String,
+    },
+    /// View replay data (input/output capture)
+    Replay {
+        /// Hook name to show replay data for
+        hook_name: String,
+    },
+    /// Clear all debug logs
+    Clear,
+    /// Enable debug mode (prints env vars to set)
+    Enable {
+        /// Debug level (info, verbose, trace)
+        #[arg(default_value = "info")]
+        level: String,
+    },
+    /// Disable debug mode (prints env vars to unset)
+    Disable,
 }
 
 #[derive(Subcommand)]
@@ -2402,6 +2451,7 @@ fn handle_port(command: PortCommands) -> Result<()> {
 
 fn handle_hooks(command: HooksCommands) -> Result<()> {
     match command {
+        HooksCommands::Debug { action } => handle_hook_debug(action),
         HooksCommands::Transform { stable } => {
             if stable {
                 println!("{}", "🔗 Using stable hooks from ~/.nabi/src/hooks...".cyan().bold());
@@ -2428,6 +2478,48 @@ fn handle_hooks(command: HooksCommands) -> Result<()> {
                         "Expected stable hooks at ~/.nabi/src/hooks/src/".yellow()
                     );
                     process::exit(1);
+                }
+
+                // Generate hook_wrapper.sh first (required for hook execution)
+                let hook_wrapper_script = stable_hooks_src.parent()
+                    .and_then(|p| p.parent())
+                    .map(|p| p.join("src").join("transform_hook_wrapper.py"))
+                    .ok_or_else(|| anyhow::anyhow!("Could not resolve transform script path"))?;
+
+                if hook_wrapper_script.exists() {
+                    println!("{}", "  Generating hook_wrapper.sh...".dimmed());
+
+                    // Find Python executable
+                    let python_exe = std::env::var("NABI_PYTHON")
+                        .ok()
+                        .map(PathBuf::from)
+                        .or_else(|| {
+                            std::process::Command::new("python3")
+                                .arg("--version")
+                                .output()
+                                .ok()
+                                .map(|_| PathBuf::from("python3"))
+                        })
+                        .or_else(|| {
+                            std::process::Command::new("python")
+                                .arg("--version")
+                                .output()
+                                .ok()
+                                .map(|_| PathBuf::from("python"))
+                        })
+                        .ok_or_else(|| anyhow::anyhow!("Python not found"))?;
+
+                    let status = process::Command::new(&python_exe)
+                        .arg(&hook_wrapper_script)
+                        .arg("--output")
+                        .arg(hooks_deploy.join("hook_wrapper.sh"))
+                        .status()
+                        .context("Failed to generate hook_wrapper.sh")?;
+
+                    if !status.success() {
+                        eprintln!("{}", "❌ Failed to generate hook_wrapper.sh".red().bold());
+                        process::exit(status.code().unwrap_or(1));
+                    }
                 }
 
                 // Copy hook files from stable location
@@ -2478,6 +2570,41 @@ fn handle_hooks(command: HooksCommands) -> Result<()> {
                     })
                     .ok_or_else(|| anyhow::anyhow!("Python not found. Set NABI_PYTHON or ensure python3/python is in PATH"))?;
 
+                // Generate hook_wrapper.sh first (required for hook execution)
+                let hooks_deploy = NabiPaths::data_dir()?.join("bin").join("hooks");
+                fs::create_dir_all(&hooks_deploy)
+                    .context(format!("Failed to create hooks directory at {}", hooks_deploy.display()))?;
+
+                let hook_wrapper_script = transform_scripts_dir.join("transform_hook_wrapper.py");
+                if hook_wrapper_script.exists() {
+                    println!(
+                        "{}",
+                        "  Generating hook_wrapper.sh...".dimmed()
+                    );
+
+                    let status = process::Command::new(&python_exe)
+                        .arg(&hook_wrapper_script)
+                        .arg("--output")
+                        .arg(hooks_deploy.join("hook_wrapper.sh"))
+                        .status()
+                        .context(format!("Failed to generate hook_wrapper.sh"))?;
+
+                    if !status.success() {
+                        eprintln!(
+                            "{}",
+                            "❌ Failed to generate hook_wrapper.sh".red().bold()
+                        );
+                        process::exit(status.code().unwrap_or(1));
+                    }
+                } else {
+                    eprintln!(
+                        "{}",
+                        format!("⚠️  hook_wrapper.sh generator not found: {}", hook_wrapper_script.display())
+                            .yellow()
+                            .bold()
+                    );
+                }
+
                 // Find and execute all transform_*.py scripts
                 let mut executed = 0;
                 if let Ok(entries) = fs::read_dir(&transform_scripts_dir) {
@@ -2488,6 +2615,11 @@ fn handle_hooks(command: HooksCommands) -> Result<()> {
                                 .and_then(|n| n.to_str())
                                 .map_or(false, |n| n.starts_with("transform_") && n.ends_with(".py"))
                         {
+                            // Skip hook_wrapper transform (already done above)
+                            if path.file_name().and_then(|n| n.to_str()) == Some("transform_hook_wrapper.py") {
+                                continue;
+                            }
+
                             println!(
                                 "{}",
                                 format!("  Running {}...", path.file_name().unwrap().to_string_lossy())
@@ -2534,6 +2666,311 @@ fn handle_hooks(command: HooksCommands) -> Result<()> {
 
                 Ok(())
             }
+        }
+    }
+}
+
+fn handle_hook_debug(action: HookDebugActions) -> Result<()> {
+    let debug_dir = NabiPaths::state_dir()?.join("hook-debug");
+
+    match action {
+        HookDebugActions::Tail { hook_name } => {
+            let today = chrono::Local::now().format("%Y%m%d").to_string();
+            let log_file = debug_dir.join(format!("{}_{}.jsonl", hook_name, today));
+
+            if !log_file.exists() {
+                eprintln!(
+                    "{}",
+                    format!("❌ No debug log found for {} today", hook_name)
+                        .red()
+                        .bold()
+                );
+                eprintln!(
+                    "{}",
+                    format!("Looking for: {}", log_file.display()).yellow()
+                );
+                eprintln!(
+                    "{}",
+                    "\nMake sure NABI_HOOK_DEBUG=1 is set and the hook has been called".yellow()
+                );
+                process::exit(1);
+            }
+
+            println!(
+                "{}",
+                format!("🔍 Tailing debug log: {}", log_file.display())
+                    .green()
+                    .bold()
+            );
+            println!();
+
+            // Use tail -f to follow the file
+            let mut cmd = process::Command::new("tail");
+            cmd.arg("-f").arg(&log_file);
+            let status = cmd.status()
+                .context(format!("Failed to tail log file: {}", log_file.display()))?;
+
+            if !status.success() {
+                process::exit(status.code().unwrap_or(1));
+            }
+            Ok(())
+        }
+        HookDebugActions::List => {
+            if !debug_dir.exists() {
+                println!("{}", "No debug directory found".yellow());
+                return Ok(());
+            }
+
+            println!("{}", "📋 Debug logs:".blue().bold());
+
+            let mut log_files: Vec<_> = fs::read_dir(&debug_dir)?
+                .filter_map(|entry| entry.ok())
+                .filter(|entry| {
+                    entry.path().extension().and_then(|e| e.to_str()) == Some("jsonl")
+                })
+                .collect();
+
+            log_files.sort_by_key(|e| {
+                e.metadata()
+                    .and_then(|m| m.modified())
+                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+            });
+
+            for entry in log_files.iter().rev() {
+                let path = entry.path();
+                let metadata = entry.metadata()?;
+                let size = metadata.len();
+                let modified = metadata
+                    .modified()?
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default();
+
+                let size_str = if size < 1024 {
+                    format!("{}B", size)
+                } else if size < 1024 * 1024 {
+                    format!("{}KB", size / 1024)
+                } else {
+                    format!("{}MB", size / (1024 * 1024))
+                };
+
+                let modified_str = chrono::DateTime::<chrono::Local>::from(
+                    std::time::UNIX_EPOCH + modified
+                )
+                .format("%Y-%m-%d %H:%M:%S")
+                .to_string();
+
+                println!(
+                    "  {} - {} - {}",
+                    path.file_name().unwrap().to_string_lossy(),
+                    size_str.dimmed(),
+                    modified_str.dimmed()
+                );
+            }
+
+            Ok(())
+        }
+        HookDebugActions::Search { hook_name, term } => {
+            let today = chrono::Local::now().format("%Y%m%d").to_string();
+            let log_file = debug_dir.join(format!("{}_{}.jsonl", hook_name, today));
+
+            if !log_file.exists() {
+                eprintln!("{}", "No debug log found".yellow());
+                process::exit(1);
+            }
+
+            println!(
+                "{}",
+                format!("🔍 Searching for '{}' in {} logs:", term, hook_name)
+                    .green()
+                    .bold()
+            );
+
+            let content = fs::read_to_string(&log_file)?;
+            for line in content.lines() {
+                if line.to_lowercase().contains(&term.to_lowercase()) {
+                    // Try to parse as JSON and extract key fields
+                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(line) {
+                        let timestamp = json.get("timestamp").and_then(|v| v.as_str()).unwrap_or("");
+                        let level = json.get("level").and_then(|v| v.as_str()).unwrap_or("");
+                        let message = json.get("message").and_then(|v| v.as_str()).unwrap_or("");
+                        println!("  [{}] {}: {}", timestamp, level, message);
+                    } else {
+                        println!("  {}", line);
+                    }
+                }
+            }
+
+            Ok(())
+        }
+        HookDebugActions::Errors { hook_name } => {
+            let today = chrono::Local::now().format("%Y%m%d").to_string();
+            let log_file = debug_dir.join(format!("{}_{}.jsonl", hook_name, today));
+
+            if !log_file.exists() {
+                eprintln!("{}", "No debug log found".yellow());
+                process::exit(1);
+            }
+
+            println!(
+                "{}",
+                format!("❌ Errors for {}:", hook_name).red().bold()
+            );
+
+            let content = fs::read_to_string(&log_file)?;
+            for line in content.lines() {
+                if line.contains("\"level\":\"error\"") {
+                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(line) {
+                        let timestamp = json.get("timestamp").and_then(|v| v.as_str()).unwrap_or("");
+                        let message = json.get("message").and_then(|v| v.as_str()).unwrap_or("");
+                        let exception = json
+                            .get("data")
+                            .and_then(|d| d.get("exception"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        println!("  [{}] {} {}", timestamp, message, exception);
+                    } else {
+                        println!("  {}", line);
+                    }
+                }
+            }
+
+            Ok(())
+        }
+        HookDebugActions::Stats { hook_name } => {
+            let today = chrono::Local::now().format("%Y%m%d").to_string();
+            let log_file = debug_dir.join(format!("{}_{}.jsonl", hook_name, today));
+
+            if !log_file.exists() {
+                eprintln!("{}", "No debug log found".yellow());
+                process::exit(1);
+            }
+
+            println!(
+                "{}",
+                format!("📊 Statistics for {}:", hook_name).blue().bold()
+            );
+            println!();
+
+            let content = fs::read_to_string(&log_file)?;
+            let mut total_calls = 0;
+            let mut error_count = 0;
+            let mut durations = Vec::new();
+            let mut level_counts = std::collections::HashMap::new();
+
+            for line in content.lines() {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(line) {
+                    if json.get("message").and_then(|v| v.as_str()) == Some("Hook started") {
+                        total_calls += 1;
+                    }
+
+                    if json.get("level").and_then(|v| v.as_str()) == Some("error") {
+                        error_count += 1;
+                    }
+
+                    if let Some(level) = json.get("level").and_then(|v| v.as_str()) {
+                        *level_counts.entry(level.to_string()).or_insert(0) += 1;
+                    }
+
+                    if let Some(data) = json.get("data") {
+                        if let Some(duration) = data.get("total_duration_ms") {
+                            if let Some(d) = duration.as_f64() {
+                                durations.push(d);
+                            }
+                        }
+                    }
+                }
+            }
+
+            println!("Total calls: {}", total_calls);
+
+            if !durations.is_empty() {
+                let sum: f64 = durations.iter().sum();
+                let avg = sum / durations.len() as f64;
+                println!("Average duration: {:.2}ms", avg);
+            }
+
+            println!("Errors: {}", error_count);
+
+            if !level_counts.is_empty() {
+                println!();
+                println!("Log level breakdown:");
+                let mut levels: Vec<_> = level_counts.iter().collect();
+                levels.sort_by(|a, b| b.1.cmp(a.1));
+                for (level, count) in levels {
+                    println!("  {}: {}", level, count);
+                }
+            }
+
+            Ok(())
+        }
+        HookDebugActions::Replay { hook_name } => {
+            let today = chrono::Local::now().format("%Y%m%d").to_string();
+            let replay_file = debug_dir.join(format!("{}_{}.replay.json", hook_name, today));
+
+            if !replay_file.exists() {
+                eprintln!("{}", "No replay file found".yellow());
+                process::exit(1);
+            }
+
+            let content = fs::read_to_string(&replay_file)?;
+            let json: serde_json::Value = serde_json::from_str(&content)?;
+            println!("{}", serde_json::to_string_pretty(&json)?);
+
+            Ok(())
+        }
+        HookDebugActions::Clear => {
+            if !debug_dir.exists() {
+                println!("{}", "No debug directory found".yellow());
+                return Ok(());
+            }
+
+            println!("{}", "⚠️  Clearing all debug logs...".yellow().bold());
+            print!("Are you sure? [y/N] ");
+            io::stdout().flush()?;
+
+            let mut input = String::new();
+            io::stdin().read_line(&mut input)?;
+
+            if input.trim().to_lowercase() == "y" {
+                for entry in fs::read_dir(&debug_dir)? {
+                    let entry = entry?;
+                    let path = entry.path();
+                    if path.is_file() {
+                        fs::remove_file(&path)?;
+                    }
+                }
+                println!("{}", "✓ Debug logs cleared".green());
+            } else {
+                println!("{}", "Cancelled".yellow());
+            }
+
+            Ok(())
+        }
+        HookDebugActions::Enable { level } => {
+            println!("{}", "✅ Debug mode enabled".green().bold());
+            println!();
+            println!("Add these to your shell profile or run before calling hooks:");
+            println!();
+            println!("export NABI_HOOK_DEBUG=1");
+            println!("export NABI_HOOK_DEBUG_LEVEL={}", level);
+            println!("export NABI_HOOK_STDERR=1");
+            println!();
+            println!("To enable Python debugger (ipdb/pdb):");
+            println!("export NABI_HOOK_PDB=1");
+
+            Ok(())
+        }
+        HookDebugActions::Disable => {
+            println!("{}", "⚠️  Debug mode disabled".yellow().bold());
+            println!();
+            println!("Unset these environment variables:");
+            println!();
+            println!("unset NABI_HOOK_DEBUG");
+            println!("unset NABI_HOOK_DEBUG_LEVEL");
+            println!("unset NABI_HOOK_PDB");
+            println!("unset NABI_HOOK_STDERR");
+
+            Ok(())
         }
     }
 }
