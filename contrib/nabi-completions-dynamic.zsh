@@ -133,41 +133,54 @@ if (( ! $+functions[_nabi_original_default] )); then
 fi
 
 # Override _default to provide dynamic completions for tmux commands
+# In zsh completion, $words is an array of words, and $CURRENT is the index of current word
 _default() {
     local context="$curcontext"
-    local -a words
-    words=(${(z)BUFFER})
+    
+    # Debug: uncomment to see what context we're in
+    # echo "DEBUG: context=$context, CURRENT=$CURRENT, words=${words[@]}" >&2
 
     # Check if we're completing nabi tmux commands
     if [[ "$context" == *"nabi"* ]] && [[ "$context" == *"tmux"* ]]; then
-        # More precise detection: nabi tmux send-prompt <pane>
+        # Case 1: nabi tmux send-prompt <pane>
+        # words[1]=nabi, words[2]=tmux, words[3]=send-prompt, words[4]=pane (being completed)
         if [[ "${words[1]}" == "nabi" ]] && \
            [[ "${words[2]}" == "tmux" ]] && \
            [[ "${words[3]}" == "send-prompt" ]] && \
-           [[ ${#words} -eq 4 ]]; then
+           [[ $CURRENT -eq 4 ]]; then
             _nabi_tmux_send_prompt_pane
             return
         fi
 
         # Case 2: nabi tmux list windows <session>
-        if [[ "$context" == *"list"* ]] && [[ "$context" == *"windows"* ]]; then
-            if [[ ${#words} -eq 5 ]]; then
-                _nabi_tmux_list_windows_session
-                return
-            fi
+        # words[1]=nabi, words[2]=tmux, words[3]=list, words[4]=windows, words[5]=session (being completed)
+        if [[ "${words[1]}" == "nabi" ]] && \
+           [[ "${words[2]}" == "tmux" ]] && \
+           [[ "${words[3]}" == "list" ]] && \
+           [[ "${words[4]}" == "windows" ]] && \
+           [[ $CURRENT -eq 5 ]]; then
+            _nabi_tmux_list_windows_session
+            return
         fi
 
         # Case 3: nabi tmux list panes <session> <window>
-        if [[ "$context" == *"list"* ]] && [[ "$context" == *"panes"* ]]; then
-            if [[ ${#words} -eq 5 ]]; then
-                # First argument: session
-                _nabi_tmux_list_panes_session
-                return
-            elif [[ ${#words} -eq 6 ]]; then
-                # Second argument: window
-                _nabi_tmux_list_panes_window
-                return
-            fi
+        # First argument: words[5]=session (being completed)
+        if [[ "${words[1]}" == "nabi" ]] && \
+           [[ "${words[2]}" == "tmux" ]] && \
+           [[ "${words[3]}" == "list" ]] && \
+           [[ "${words[4]}" == "panes" ]] && \
+           [[ $CURRENT -eq 5 ]]; then
+            _nabi_tmux_list_panes_session
+            return
+        fi
+        # Second argument: words[6]=window (being completed)
+        if [[ "${words[1]}" == "nabi" ]] && \
+           [[ "${words[2]}" == "tmux" ]] && \
+           [[ "${words[3]}" == "list" ]] && \
+           [[ "${words[4]}" == "panes" ]] && \
+           [[ $CURRENT -eq 6 ]]; then
+            _nabi_tmux_list_panes_window
+            return
         fi
     fi
 
