@@ -3,114 +3,174 @@
 #
 # This file adds runtime-aware completion to nabi CLI by querying tmux and nabi itself.
 # It's loaded after the base _nabi completion to provide:
-# - Session names for `nabi tmux send-prompt`
+# - Session names for `nabi tmux send-prompt` and `nabi tmux list windows/panes`
 # - Window lists for context-aware selection
 # - Pane targets in full session:window.pane format
 #
-# Install by adding to your .zshrc:
-#   source ~/.cache/zsh/completions/nabi-completions-dynamic.zsh
+# This hooks into the clap-generated completions by overriding specific argument completions.
+
+# Helper function to get tmux sessions
+_nabi_get_tmux_sessions() {
+    local -a sessions
+    sessions=($(nabi tmux list sessions --format name 2>/dev/null))
+    echo "${sessions[@]}"
+}
+
+# Helper function to get windows for a session
+_nabi_get_tmux_windows() {
+    local session="$1"
+    if [[ -z "$session" ]]; then
+        return 1
+    fi
+    local -a windows
+    windows=($(nabi tmux list windows "$session" --format id 2>/dev/null))
+    echo "${windows[@]}"
+}
+
+# Helper function to get panes for a session:window
+_nabi_get_tmux_panes() {
+    local session="$1"
+    local window="$2"
+    if [[ -z "$session" ]] || [[ -z "$window" ]]; then
+        return 1
+    fi
+    local -a panes
+    # Use full format to get session:window.pane directly
+    panes=($(nabi tmux list panes "${session}:${window}" --format full 2>/dev/null))
+    echo "${panes[@]}"
+}
 
 # Completion for: nabi tmux send-prompt <PANE>
 _nabi_tmux_send_prompt_pane() {
-    local -a sessions windows panes
+    local -a targets
 
-    # Get all tmux sessions
-    sessions=($(nabi tmux list sessions 2>/dev/null))
+    # Get all sessions
+    local -a sessions
+    sessions=($(_nabi_get_tmux_sessions))
 
     if (( ${#sessions} == 0 )); then
+        _message "No tmux sessions found"
         return 1
     fi
 
     # For each session, get all windows
-    local -a targets
     for session in $sessions; do
-        windows=($(nabi tmux list windows "$session" 2>/dev/null))
+        local -a windows
+        windows=($(_nabi_get_tmux_windows "$session"))
 
+        # Add session:window format (implicit pane 1)
         for window in $windows; do
-            # Get panes for this window (in full format: session:window.pane)
-            panes=($(nabi tmux list panes "$session" "$window" --format full 2>/dev/null))
+            targets+=("${session}:${window}")
+        done
 
-            for pane in $panes; do
-                targets+=("$pane")
-            done
+        # Get all panes in full format (session:window.pane)
+        for window in $windows; do
+            local -a panes
+            panes=($(_nabi_get_tmux_panes "$session" "$window"))
+            targets+=($panes)
         done
     done
 
-    # Return targets for completion
-    _values 'pane target' $targets
-}
+    # Remove duplicates and sort
+    targets=(${(u)targets})
 
-# Completion for: nabi tmux list sessions
-_nabi_tmux_list_sessions() {
-    local -a sessions
-    sessions=($(nabi tmux list sessions 2>/dev/null))
-    _values 'session' $sessions
+    _describe 'pane target' targets
 }
 
 # Completion for: nabi tmux list windows <SESSION>
-_nabi_tmux_list_windows() {
-    local session="${words[5]}"
+_nabi_tmux_list_windows_session() {
+    local -a sessions
+    sessions=($(_nabi_get_tmux_sessions))
 
-    if [[ -z "$session" ]]; then
-        # No session yet, suggest available sessions
-        local -a sessions
-        sessions=($(nabi tmux list sessions 2>/dev/null))
-        _values 'session' $sessions
-    else
-        # Session specified, list its windows
-        local -a windows
-        windows=($(nabi tmux list windows "$session" 2>/dev/null))
-        _values 'window' $windows
+    if (( ${#sessions} == 0 )); then
+        _message "No tmux sessions found"
+        return 1
     fi
+
+    _describe 'session' sessions
+}
+
+# Completion for: nabi tmux list panes <SESSION>
+_nabi_tmux_list_panes_session() {
+    local -a sessions
+    sessions=($(_nabi_get_tmux_sessions))
+
+    if (( ${#sessions} == 0 )); then
+        _message "No tmux sessions found"
+        return 1
+    fi
+
+    _describe 'session' sessions
 }
 
 # Completion for: nabi tmux list panes <SESSION> <WINDOW>
-_nabi_tmux_list_panes() {
+_nabi_tmux_list_panes_window() {
     local session="${words[5]}"
-    local window="${words[6]}"
 
     if [[ -z "$session" ]]; then
-        # No session yet
-        local -a sessions
-        sessions=($(nabi tmux list sessions 2>/dev/null))
-        _values 'session' $sessions
-    elif [[ -z "$window" ]]; then
-        # Session specified, list its windows
-        local -a windows
-        windows=($(nabi tmux list windows "$session" 2>/dev/null))
-        _values 'window' $windows
-    else
-        # Both specified, list panes
-        local -a panes
-        panes=($(nabi tmux list panes "$session" "$window" 2>/dev/null))
-        _values 'pane' $panes
+        _message "Session required"
+        return 1
     fi
+
+    local -a windows
+    windows=($(_nabi_get_tmux_windows "$session"))
+
+    if (( ${#windows} == 0 )); then
+        _message "No windows found in session '$session'"
+        return 1
+    fi
+
+    _describe 'window' windows
 }
 
-# Wire completions for nabi tmux send-prompt
-_nabi_tmux_send_prompt() {
-    _arguments -C \
-        "1: :_nabi_tmux_send_prompt_pane" \
-        "2: :(message)"
+# Hook into clap-generated completions by overriding _default completion
+# Clap uses :argument:_default for positional arguments, so we override _default
+# to check the context and provide dynamic completions
+
+# Store original _default function
+if (( ! $+functions[_nabi_original_default] )); then
+    functions[_nabi_original_default]=$functions[_default]
+fi
+
+# Override _default to provide dynamic completions for tmux commands
+_default() {
+    local context="$curcontext"
+    local -a words
+    words=(${(z)BUFFER})
+
+    # Check if we're completing nabi tmux commands
+    if [[ "$context" == *"nabi"* ]] && [[ "$context" == *"tmux"* ]]; then
+        # More precise detection: nabi tmux send-prompt <pane>
+        if [[ "${words[1]}" == "nabi" ]] && \
+           [[ "${words[2]}" == "tmux" ]] && \
+           [[ "${words[3]}" == "send-prompt" ]] && \
+           [[ ${#words} -eq 4 ]]; then
+            _nabi_tmux_send_prompt_pane
+            return
+        fi
+
+        # Case 2: nabi tmux list windows <session>
+        if [[ "$context" == *"list"* ]] && [[ "$context" == *"windows"* ]]; then
+            if [[ ${#words} -eq 5 ]]; then
+                _nabi_tmux_list_windows_session
+                return
+            fi
+        fi
+
+        # Case 3: nabi tmux list panes <session> <window>
+        if [[ "$context" == *"list"* ]] && [[ "$context" == *"panes"* ]]; then
+            if [[ ${#words} -eq 5 ]]; then
+                # First argument: session
+                _nabi_tmux_list_panes_session
+                return
+            elif [[ ${#words} -eq 6 ]]; then
+                # Second argument: window
+                _nabi_tmux_list_panes_window
+                return
+            fi
+        fi
+    fi
+
+    # Fall back to original _default for everything else
+    _nabi_original_default "$@"
 }
-
-# Wire completions for nabi tmux list subcommands
-_nabi_tmux_list() {
-    local cmd="$words[4]"
-
-    case "$cmd" in
-        sessions)
-            _nabi_tmux_list_sessions
-            ;;
-        windows)
-            _nabi_tmux_list_windows
-            ;;
-        panes)
-            _nabi_tmux_list_panes
-            ;;
-    esac
-}
-
-# Register the dynamic completions
-compdef _nabi_tmux_send_prompt nabi-tmux-send-prompt
-compdef _nabi_tmux_list nabi-tmux-list

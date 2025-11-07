@@ -17,7 +17,7 @@
 
 use anyhow::{Context, Result};
 use chrono;
-use clap::Subcommand;
+use clap::{Subcommand, ValueHint};
 use serde::{Deserialize, Serialize};
 use serde_json;
 use std::process::Command;
@@ -105,7 +105,7 @@ PANE FORMAT:
         ///
         /// Examples: cross-pane:3.2, schema-driven:1, mywindow:2.1
         /// Windows and panes use 1-based numbering
-        #[arg(value_name = "PANE")]
+        #[arg(value_name = "PANE", value_hint = ValueHint::Other)]
         pane: String,
 
         /// Message/command to send and execute
