@@ -16,7 +16,10 @@
 /// - Recovery steps ensure clean state before sending commands
 
 use anyhow::{Context, Result};
+use chrono;
 use clap::Subcommand;
+use serde::{Deserialize, Serialize};
+use serde_json;
 use std::process::Command;
 use std::thread;
 use std::time::Duration;
@@ -28,6 +31,14 @@ const DELAY_TEXT_TO_ENTER: u64 = 15; // Debounce between text and carriage retur
 
 // Supported shell processes (for foreground process detection)
 const SUPPORTED_SHELLS: &[&str] = &["zsh", "bash", "fish", "sh", "ksh"];
+
+// TUI applications that should receive commands directly (no Ctrl+C recovery)
+// These are interactive applications where we want to send text directly
+const TUI_DIRECT_SEND: &[&str] = &["claude", "Claude"];
+
+// TUI applications that require Ctrl+C recovery (vim, less, python REPL, etc.)
+// These block the shell and need to be exited before sending commands
+const TUI_RECOVERY_NEEDED: &[&str] = &["vim", "vi", "nano", "less", "more", "top", "htop", "python", "python3", "ipython", "node", "nodejs", "irb", "pry"];
 
 // Note: Pane format validation is done via parsing, not regex
 // These constants are kept for potential future use or documentation
@@ -128,64 +139,78 @@ PANE FORMAT:
 
 #[derive(Subcommand)]
 pub enum ListCommands {
-    /// List all tmux sessions (for completion)
+    /// List all tmux sessions (for completion and agent introspection)
     ///
-    /// Queries tmux for active sessions and emits their names.
-    /// Used by shell completion to populate session choices.
+    /// Queries tmux for active sessions with rich metadata.
+    /// Provides consistent, predictable output suitable for agent parsing.
     ///
-    /// Output: One session name per line
+    /// Output formats:
+    ///   - json: Structured JSON array with full session metadata (default, for agents)
+    ///   - name: One session name per line (for shell completion)
+    ///   - full: Human-readable format with window count
     ///
-    /// Example: `nabi tmux list sessions | xargs -I {} echo {}`
+    /// Example: `nabi tmux list sessions | jq '.[] | .name'`
+    /// Example: `nabi tmux list sessions --format name | xargs -I {} echo {}`
     #[command(name = "sessions")]
     Sessions {
-        /// Format for output (default: name)
-        #[arg(long, default_value = "name")]
+        /// Output format: json, name, or full (default: json)
+        #[arg(long, default_value = "json")]
         format: String,
 
-        /// Show only sessions matching pattern
+        /// Show only sessions matching pattern (substring match)
         #[arg(long)]
         filter: Option<String>,
     },
 
-    /// List all tmux windows in a session (for completion)
+    /// List all tmux windows in a session (for completion and introspection)
     ///
     /// Queries tmux for windows in a specific session.
-    /// Used by shell completion to show window choices after session selection.
+    /// If no session is provided, uses the current tmux session.
     ///
-    /// Output: One window per line (format: window_number:window_name)
+    /// Output formats:
+    ///   - json: Structured JSON array with window metadata (default, for agents)
+    ///   - id: Window index numbers only
+    ///   - name: Window names only
+    ///   - full: window_index:window_name format
     ///
-    /// Example: `nabi tmux list windows myses`
+    /// Example: `nabi tmux list windows` (uses current session)
+    /// Example: `nabi tmux list windows myses` (specific session)
+    /// Example: `nabi tmux list windows --format json`
     #[command(name = "windows")]
     Windows {
-        /// Session name to list windows from
+        /// Session name to list windows from (defaults to current session if not provided)
         #[arg(value_name = "SESSION")]
-        session: String,
+        session: Option<String>,
 
-        /// Format for output (default: id)
-        #[arg(long, default_value = "id")]
+        /// Format for output (default: json)
+        #[arg(long, default_value = "json")]
         format: String,
     },
 
-    /// List all tmux panes in a window (for completion)
+    /// List all tmux panes in a window (for completion and introspection)
     ///
     /// Queries tmux for panes in a specific session:window.
-    /// Used by shell completion to show pane choices.
+    /// If no session is provided, uses the current tmux session.
     ///
-    /// Output: One pane ID per line (format: session:window.pane)
+    /// Target format: "session:window" or just "window" (uses current session)
     ///
-    /// Example: `nabi tmux list panes myses 1`
+    /// Output formats:
+    ///   - json: Structured JSON array with pane metadata (default, for agents)
+    ///   - id: Pane index numbers only
+    ///   - number: Pane numbers (1-based)
+    ///   - full: session:window.pane format
+    ///
+    /// Example: `nabi tmux list panes 1` (uses current session, window 1)
+    /// Example: `nabi tmux list panes myses:2` (specific session and window)
     #[command(name = "panes")]
     Panes {
-        /// Session name
-        #[arg(value_name = "SESSION")]
-        session: String,
+        /// Target: "session:window" format or just window number (uses current session)
+        /// Examples: "1" (current session, window 1), "myses:2" (session myses, window 2)
+        #[arg(value_name = "TARGET")]
+        target: String,
 
-        /// Window number (1-based)
-        #[arg(value_name = "WINDOW")]
-        window: String,
-
-        /// Format for output (default: full)
-        #[arg(long, default_value = "full")]
+        /// Format for output (default: json)
+        #[arg(long, default_value = "json")]
         format: String,
     },
 }
@@ -204,26 +229,137 @@ pub fn handle_tmux_commands(cmd: TmuxCommands) -> Result<()> {
 fn handle_list_commands(cmd: ListCommands) -> Result<()> {
     match cmd {
         ListCommands::Sessions { format, filter } => list_tmux_sessions(&format, filter.as_deref()),
-        ListCommands::Windows { session, format } => list_tmux_windows(&session, &format),
-        ListCommands::Panes { session, window, format } => list_tmux_panes(&session, &window, &format),
+        ListCommands::Windows { session, format } => {
+            let session_name = session.unwrap_or_else(|| get_current_tmux_session().unwrap_or_default());
+            list_tmux_windows(&session_name, &format)
+        }
+        ListCommands::Panes { target, format } => {
+            // Parse target: "session:window" or just "window"
+            let (session_name, window) = if let Some(colon_pos) = target.find(':') {
+                let session = target[..colon_pos].to_string();
+                let window = target[colon_pos + 1..].to_string();
+                (session, window)
+            } else {
+                // Just window number, use current session
+                let session = get_current_tmux_session()
+                    .ok_or_else(|| anyhow::anyhow!("Not in a tmux session. Please specify session:window format (e.g., 'myses:1')"))?;
+                (session, target)
+            };
+            list_tmux_panes(&session_name, &window, &format)
+        }
     }
 }
 
-/// Query tmux for list of sessions
-fn list_tmux_sessions(format: &str, filter: Option<&str>) -> Result<()> {
+/// Get the current tmux session name if running inside tmux
+fn get_current_tmux_session() -> Option<String> {
     let output = Command::new("tmux")
-        .args(&["list-sessions", "-F", "#{session_name}"])
+        .args(&["display-message", "-p", "#{session_name}"])
+        .output()
+        .ok()?;
+
+    if output.status.success() {
+        let name = String::from_utf8(output.stdout).ok()?.trim().to_string();
+        if !name.is_empty() {
+            return Some(name);
+        }
+    }
+    None
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct SessionInfo {
+    name: String,
+    windows: u32,
+    attached: bool,
+    created: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    is_claude_tui: Option<bool>,
+}
+
+/// Check if a session has Claude TUI panes by querying pane processes
+fn check_session_has_claude_tui(session_name: &str) -> bool {
+    // Query all panes in all windows of the session for their foreground processes
+    // We need to check each window separately since list-panes only works per-window
+    let windows_output = Command::new("tmux")
+        .args(&[
+            "list-windows",
+            "-t",
+            session_name,
+            "-F",
+            "#{window_index}",
+        ])
+        .output();
+
+    if let Ok(windows_result) = windows_output {
+        if let Ok(windows_stdout) = String::from_utf8(windows_result.stdout) {
+            for window_line in windows_stdout.lines() {
+                let window_idx = window_line.trim();
+                if window_idx.is_empty() {
+                    continue;
+                }
+
+                // Check all panes in this window
+                let panes_output = Command::new("tmux")
+                    .args(&[
+                        "list-panes",
+                        "-t",
+                        &format!("{}:{}", session_name, window_idx),
+                        "-F",
+                        "#{pane_current_command}",
+                    ])
+                    .output();
+
+                if let Ok(panes_result) = panes_output {
+                    if let Ok(panes_stdout) = String::from_utf8(panes_result.stdout) {
+                        for pane_line in panes_stdout.lines() {
+                            let process = pane_line.trim();
+                            if !process.is_empty() && is_claude_tui(process) {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    false
+}
+
+/// Query tmux for list of sessions with consistent, predictable output
+fn list_tmux_sessions(format: &str, filter: Option<&str>) -> Result<()> {
+    // Query all session information in one call for consistency
+    let output = Command::new("tmux")
+        .args(&[
+            "list-sessions",
+            "-F",
+            "#{session_name}|#{session_windows}|#{session_attached}|#{session_created}",
+        ])
         .output()
         .context("Failed to query tmux sessions")?;
 
     if !output.status.success() {
-        return Ok(()); // No sessions running
+        // No sessions running - return empty result based on format
+        match format {
+            "json" => println!("[]"),
+            _ => {} // Empty output for other formats
+        }
+        return Ok(());
     }
 
     let stdout = String::from_utf8(output.stdout)?;
+    let mut sessions: Vec<SessionInfo> = Vec::new();
 
     for line in stdout.lines() {
-        let session_name = line.trim();
+        let parts: Vec<&str> = line.split('|').collect();
+        if parts.len() < 4 {
+            continue; // Skip malformed lines
+        }
+
+        let session_name = parts[0].trim();
+        let window_count = parts[1].trim().parse::<u32>().unwrap_or(0);
+        let attached = parts[2].trim() == "1";
+        let created_timestamp = parts[3].trim().parse::<i64>().ok();
 
         // Apply filter if provided
         if let Some(pattern) = filter {
@@ -232,29 +368,62 @@ fn list_tmux_sessions(format: &str, filter: Option<&str>) -> Result<()> {
             }
         }
 
-        match format {
-            "name" => println!("{}", session_name),
-            "full" => {
-                // Get window count for this session
-                let count_output = Command::new("tmux")
-                    .args(&["list-windows", "-t", session_name, "-F", "#{window_index}"])
-                    .output();
+        let created_str = created_timestamp.map(|ts| {
+            // Convert Unix timestamp to ISO 8601 format
+            chrono::DateTime::from_timestamp(ts, 0)
+                .map(|dt| dt.format("%Y-%m-%dT%H:%M:%S%z").to_string())
+                .unwrap_or_else(|| ts.to_string())
+        });
 
-                if let Ok(count_out) = count_output {
-                    let window_count = String::from_utf8(count_out.stdout)
-                        .unwrap_or_default()
-                        .lines()
-                        .count();
-                    println!("{} ({})", session_name, window_count);
-                } else {
-                    println!("{}", session_name);
-                }
+        // Check if this session has Claude TUI windows
+        // Query the first window's foreground process to detect Claude TUI
+        let is_claude = check_session_has_claude_tui(session_name);
+
+        sessions.push(SessionInfo {
+            name: session_name.to_string(),
+            windows: window_count,
+            attached,
+            created: created_str,
+            is_claude_tui: Some(is_claude),
+        });
+    }
+
+    // Sort sessions by name for consistent output
+    sessions.sort_by(|a, b| a.name.cmp(&b.name));
+
+    match format {
+        "json" => {
+            // Output as JSON array for structured parsing
+            let json = serde_json::to_string_pretty(&sessions)
+                .context("Failed to serialize sessions to JSON")?;
+            println!("{}", json);
+        }
+        "full" => {
+            // Human-readable format with metadata
+            for session in &sessions {
+                let attached_str = if session.attached { "attached" } else { "detached" };
+                let claude_str = session.is_claude_tui
+                    .filter(|&is_claude| is_claude)
+                    .map(|_| ", Claude TUI")
+                    .unwrap_or_default();
+                println!("{} ({} windows, {}{})", session.name, session.windows, attached_str, claude_str);
             }
-            _ => println!("{}", session_name),
+        }
+        "name" | _ => {
+            // Simple one-per-line format for shell completion
+            for session in &sessions {
+                println!("{}", session.name);
+            }
         }
     }
 
     Ok(())
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct WindowInfo {
+    index: u32,
+    name: String,
 }
 
 /// Query tmux for list of windows in a session
@@ -265,10 +434,16 @@ fn list_tmux_windows(session: &str, format: &str) -> Result<()> {
         .context(format!("Failed to query windows for session '{}'", session))?;
 
     if !output.status.success() {
-        return Ok(()); // Session doesn't exist or has no windows
+        // Return empty result based on format
+        match format {
+            "json" => println!("[]"),
+            _ => {} // Empty output for other formats
+        }
+        return Ok(());
     }
 
     let stdout = String::from_utf8(output.stdout)?;
+    let mut windows: Vec<WindowInfo> = Vec::new();
 
     for line in stdout.lines() {
         let entry = line.trim();
@@ -276,24 +451,53 @@ fn list_tmux_windows(session: &str, format: &str) -> Result<()> {
             continue;
         }
 
-        match format {
-            "id" => {
-                // Extract just the window number
-                if let Some(idx) = entry.split(':').next() {
-                    println!("{}", idx);
-                }
+        let parts: Vec<&str> = entry.split(':').collect();
+        if parts.len() >= 2 {
+            let index = parts[0].trim().parse::<u32>().unwrap_or(0);
+            let name = parts[1..].join(":"); // Handle names with colons
+
+            windows.push(WindowInfo {
+                index,
+                name,
+            });
+        }
+    }
+
+    // Sort by index for consistent output
+    windows.sort_by(|a, b| a.index.cmp(&b.index));
+
+    match format {
+        "json" => {
+            let json = serde_json::to_string_pretty(&windows)
+                .context("Failed to serialize windows to JSON")?;
+            println!("{}", json);
+        }
+        "id" => {
+            for window in &windows {
+                println!("{}", window.index);
             }
-            "name" => {
-                // Extract just the window name
-                if let Some(name) = entry.split(':').nth(1) {
-                    println!("{}", name);
-                }
+        }
+        "name" => {
+            for window in &windows {
+                println!("{}", window.name);
             }
-            _ => println!("{}", entry), // full format: index:name
+        }
+        _ => {
+            // full format: index:name
+            for window in &windows {
+                println!("{}:{}", window.index, window.name);
+            }
         }
     }
 
     Ok(())
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct PaneInfo {
+    index: u32,
+    number: u32, // 1-based pane number
+    target: String, // session:window.pane format
 }
 
 /// Query tmux for list of panes in a window
@@ -306,10 +510,16 @@ fn list_tmux_panes(session: &str, window: &str, format: &str) -> Result<()> {
         .context(format!("Failed to query panes for {}:{}", session, window))?;
 
     if !output.status.success() {
-        return Ok(()); // Window doesn't exist or has no panes
+        // Return empty result based on format
+        match format {
+            "json" => println!("[]"),
+            _ => {} // Empty output for other formats
+        }
+        return Ok(());
     }
 
     let stdout = String::from_utf8(output.stdout)?;
+    let mut panes: Vec<PaneInfo> = Vec::new();
 
     for line in stdout.lines() {
         let pane_index = line.trim();
@@ -317,17 +527,38 @@ fn list_tmux_panes(session: &str, window: &str, format: &str) -> Result<()> {
             continue;
         }
 
-        match format {
-            "id" => println!("{}", pane_index),
-            "number" => {
-                // Convert 0-based index to 1-based pane number
-                if let Ok(idx) = pane_index.parse::<usize>() {
-                    println!("{}", idx + 1);
-                }
+        if let Ok(idx) = pane_index.parse::<u32>() {
+            panes.push(PaneInfo {
+                index: idx,
+                number: idx + 1, // Convert to 1-based
+                target: format!("{}:{}.{}", session, window, idx),
+            });
+        }
+    }
+
+    // Sort by index for consistent output
+    panes.sort_by(|a, b| a.index.cmp(&b.index));
+
+    match format {
+        "json" => {
+            let json = serde_json::to_string_pretty(&panes)
+                .context("Failed to serialize panes to JSON")?;
+            println!("{}", json);
+        }
+        "id" => {
+            for pane in &panes {
+                println!("{}", pane.index);
             }
-            _ => {
-                // full format: session:window.pane
-                println!("{}:{}.{}", session, window, pane_index);
+        }
+        "number" => {
+            for pane in &panes {
+                println!("{}", pane.number);
+            }
+        }
+        _ => {
+            // full format: session:window.pane
+            for pane in &panes {
+                println!("{}", pane.target);
             }
         }
     }
@@ -384,17 +615,54 @@ fn parse_pane_target(pane: &str) -> Result<(String, String, String)> {
     );
 }
 
+/// Check if a process name indicates a Claude TUI session
+///
+/// Claude Code TUI sessions often show as version numbers (e.g., "2.0.34")
+/// or contain "claude" in the process name. We detect these to avoid
+/// sending Ctrl+C which would kill the interactive session.
+fn is_claude_tui(process_name: &str) -> bool {
+    let lower = process_name.to_lowercase();
+
+    // Check for explicit "claude" in name
+    if lower.contains("claude") {
+        return true;
+    }
+
+    // Check if it looks like a version number (Claude Code shows as version)
+    // Pattern: digits.digits.digits (e.g., "2.0.34")
+    if process_name.matches('.').count() >= 2 {
+        let parts: Vec<&str> = process_name.split('.').collect();
+        if parts.len() >= 3 {
+            // Check if all parts are numeric (version-like)
+            if parts.iter().all(|p| p.parse::<u32>().is_ok()) {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+/// Check if a TUI app requires Ctrl+C recovery before sending commands
+fn needs_tui_recovery(process_name: &str) -> bool {
+    let lower = process_name.to_lowercase();
+    TUI_RECOVERY_NEEDED.iter().any(|&app| lower.contains(app))
+}
+
 /// Send message + Enter as reliable operation to target pane
 ///
 /// Implements robust pane state handling:
-/// 1. Validate pane format and verify foreground process is a shell
-/// 2. Clear any continuation state (PS2 prompt from unclosed quotes/parens/etc)
-/// 3. Send message literally (avoiding interpretation issues)
-/// 4. Terminate with carriage return (not "Enter" key name)
+/// 1. Validate pane format and detect foreground process type
+/// 2. For Claude TUI: send commands directly (no recovery needed)
+/// 3. For blocking TUI apps: send Ctrl+C to recover to shell
+/// 4. For shells: clear continuation state, then send message
+/// 5. Send message literally (avoiding interpretation issues)
+/// 6. Terminate with carriage return (not "Enter" key name)
 ///
-/// This pattern handles all four common failure modes:
-/// - Pane in TUI app (vim, less, python REPL, top) → tries C-c to recover
-/// - Unclosed quote/paren/backslash → cleared by C-c
+/// This pattern handles all failure modes:
+/// - Claude TUI sessions → send directly (don't kill with C-c)
+/// - Blocking TUI apps (vim, less, python REPL, top) → C-c to recover
+/// - Shell with unclosed quote/paren/backslash → cleared by C-c
 /// - Special characters/backslashes misinterpreted → fixed by -l flag
 /// - Enter key timing issues → fixed by using C-m (carriage return)
 fn handle_send_prompt(pane: &str, message: &str, delay: u64) -> Result<()> {
@@ -406,7 +674,7 @@ fn handle_send_prompt(pane: &str, message: &str, delay: u64) -> Result<()> {
         anyhow::bail!("Message cannot be empty");
     }
 
-    // Step 1: Verify we're at a shell; if not, try to recover
+    // Step 1: Detect foreground process type
     let fg_output = Command::new("tmux")
         .args(&["display-message", "-p", "-t", pane, "#{pane_current_command}"])
         .output()
@@ -426,20 +694,33 @@ fn handle_send_prompt(pane: &str, message: &str, delay: u64) -> Result<()> {
 
     let fg_process = String::from_utf8_lossy(&fg_output.stdout).trim().to_string();
     let is_shell = SUPPORTED_SHELLS.contains(&fg_process.as_str());
+    let is_claude = is_claude_tui(&fg_process);
+    let needs_recovery = needs_tui_recovery(&fg_process);
 
-    if !is_shell {
-        // Try to break out of TUI app; don't loop forever, just one attempt
+    // Step 2: Handle different pane states
+    if is_claude {
+        // Claude TUI: send commands directly, no recovery needed
+        // Claude TUI handles input directly at its prompt (>)
+    } else if needs_recovery {
+        // Blocking TUI app: send Ctrl+C to exit to shell
         let _ = Command::new("tmux")
             .args(&["send-keys", "-t", pane, "C-c"])
             .output();
         thread::sleep(Duration::from_millis(DELAY_TUI_RECOVERY));
-    }
 
-    // Step 2: Ensure clean prompt (kill any partial line / PS2 continuation)
-    let _ = Command::new("tmux")
-        .args(&["send-keys", "-t", pane, "C-c"])
-        .output();
-    thread::sleep(Duration::from_millis(DELAY_PROMPT_CLEAR));
+        // Clear any continuation prompt
+        let _ = Command::new("tmux")
+            .args(&["send-keys", "-t", pane, "C-c"])
+            .output();
+        thread::sleep(Duration::from_millis(DELAY_PROMPT_CLEAR));
+    } else if is_shell {
+        // Shell: clear any continuation state (PS2 prompt from unclosed quotes/parens/etc)
+        let _ = Command::new("tmux")
+            .args(&["send-keys", "-t", pane, "C-c"])
+            .output();
+        thread::sleep(Duration::from_millis(DELAY_PROMPT_CLEAR));
+    }
+    // For unknown processes, proceed anyway (might be a custom TUI that accepts input)
 
     // Step 3: Send literally (uses -l flag), then carriage return (C-m, not "Enter")
     let send_output = Command::new("tmux")
@@ -485,7 +766,18 @@ fn handle_send_prompt(pane: &str, message: &str, delay: u64) -> Result<()> {
         thread::sleep(Duration::from_millis(delay));
     }
 
-    println!("✓ Execution complete in pane: {} (fg: {})", pane, fg_process);
+    // Generate descriptive process type for success message
+    let process_type = if is_claude {
+        "Claude TUI"
+    } else if is_shell {
+        "shell"
+    } else if needs_recovery {
+        "TUI (recovered)"
+    } else {
+        "process"
+    };
+
+    println!("✓ Execution complete in pane: {} ({}: {})", pane, process_type, fg_process);
     Ok(())
 }
 
@@ -568,6 +860,42 @@ mod tests {
         let result = handle_send_prompt("invalid-format", "echo test", 50);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Invalid pane target"));
+    }
+
+    #[test]
+    fn test_is_claude_tui_version_number() {
+        assert!(is_claude_tui("2.0.34"));
+        assert!(is_claude_tui("3.1.2"));
+        assert!(is_claude_tui("1.2.3.4"));
+    }
+
+    #[test]
+    fn test_is_claude_tui_name() {
+        assert!(is_claude_tui("claude"));
+        assert!(is_claude_tui("Claude"));
+        assert!(is_claude_tui("claude-code"));
+        assert!(is_claude_tui("my-claude-app"));
+    }
+
+    #[test]
+    fn test_is_claude_tui_false() {
+        assert!(!is_claude_tui("zsh"));
+        assert!(!is_claude_tui("vim"));
+        assert!(!is_claude_tui("python"));
+        assert!(!is_claude_tui("2.0")); // Only 2 parts, not 3+
+        assert!(!is_claude_tui("not-a-version"));
+    }
+
+    #[test]
+    fn test_needs_tui_recovery() {
+        assert!(needs_tui_recovery("vim"));
+        assert!(needs_tui_recovery("less"));
+        assert!(needs_tui_recovery("python"));
+        assert!(needs_tui_recovery("python3"));
+        assert!(needs_tui_recovery("node"));
+        assert!(!needs_tui_recovery("zsh"));
+        assert!(!needs_tui_recovery("claude"));
+        assert!(!needs_tui_recovery("2.0.34"));
     }
 
     // Note: Full integration tests would require running tmux,
