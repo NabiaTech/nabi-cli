@@ -185,10 +185,6 @@ pub enum ListCommands {
         /// Format for output (default: json)
         #[arg(long, default_value = "json")]
         format: String,
-
-        /// Disable strict session validation
-        #[arg(long)]
-        no_strict: bool,
     },
 
     /// List all tmux panes in a window (for completion and introspection)
@@ -216,10 +212,6 @@ pub enum ListCommands {
         /// Format for output (default: json)
         #[arg(long, default_value = "json")]
         format: String,
-
-        /// Disable strict session validation
-        #[arg(long)]
-        no_strict: bool,
     },
 }
 
@@ -237,11 +229,11 @@ pub fn handle_tmux_commands(cmd: TmuxCommands) -> Result<()> {
 fn handle_list_commands(cmd: ListCommands) -> Result<()> {
     match cmd {
         ListCommands::Sessions { format, filter } => list_tmux_sessions(&format, filter.as_deref()),
-        ListCommands::Windows { session, format, no_strict } => {
+        ListCommands::Windows { session, format } => {
             let session_name = session.unwrap_or_else(|| get_current_tmux_session().unwrap_or_default());
-            list_tmux_windows(&session_name, &format, no_strict)
+            list_tmux_windows(&session_name, &format)
         }
-        ListCommands::Panes { target, format, no_strict } => {
+        ListCommands::Panes { target, format } => {
             // Parse target: "session:window" or just "window"
             let (session_name, window) = if let Some(colon_pos) = target.find(':') {
                 let session = target[..colon_pos].to_string();
@@ -253,7 +245,7 @@ fn handle_list_commands(cmd: ListCommands) -> Result<()> {
                     .ok_or_else(|| anyhow::anyhow!("Not in a tmux session. Please specify session:window format (e.g., 'myses:1')"))?;
                 (session, target)
             };
-            list_tmux_panes(&session_name, &window, &format, no_strict)
+            list_tmux_panes(&session_name, &window, &format)
         }
     }
 }
@@ -274,238 +266,6 @@ fn get_current_tmux_session() -> Option<String> {
     None
 }
 
-// ========================================================================
-// WORK UNIT 1: Context Detection Infrastructure
-// ========================================================================
-
-/// Context information about the current tmux environment
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TmuxContextInfo {
-    pub in_tmux: bool,
-    pub session_name: Option<String>,
-    pub window_index: Option<u32>,
-    pub window_name: Option<String>,
-    pub pane_index: Option<u32>,
-    pub window_active: Option<bool>,
-    pub pane_active: Option<bool>,
-    pub pane_id: Option<String>,     // e.g. "%0"
-    pub window_id: Option<String>,   // e.g. "@0"
-    pub window_index_base: u32,      // from tmux config (0 or 1)
-    pub pane_index_base: u32,        // from tmux config (0 or 1)
-}
-
-impl Default for TmuxContextInfo {
-    fn default() -> Self {
-        TmuxContextInfo {
-            in_tmux: false,
-            session_name: None,
-            window_index: None,
-            window_name: None,
-            pane_index: None,
-            window_active: None,
-            pane_active: None,
-            pane_id: None,
-            window_id: None,
-            window_index_base: 0,
-            pane_index_base: 0,
-        }
-    }
-}
-
-/// Get tmux index base settings (window-base-index and pane-base-index)
-///
-/// Returns tuple of (window_base, pane_base). Both default to 0 if not set.
-/// Handles the case where tmux returns empty string (means using default).
-fn get_tmux_index_bases() -> Result<(u32, u32)> {
-    // Query window base index
-    let window_base_output = Command::new("tmux")
-        .args(&["show-options", "-gv", "base-index"])
-        .output()
-        .context("Failed to query tmux base-index")?;
-
-    let window_base = if window_base_output.status.success() {
-        let output_str = String::from_utf8(window_base_output.stdout)?
-            .trim()
-            .to_string();
-        if output_str.is_empty() {
-            0 // Default to 0 if empty
-        } else {
-            output_str.parse::<u32>()
-                .context("Failed to parse base-index as u32")?
-        }
-    } else {
-        0 // Default to 0 on error
-    };
-
-    // Query pane base index
-    let pane_base_output = Command::new("tmux")
-        .args(&["show-options", "-gv", "pane-base-index"])
-        .output()
-        .context("Failed to query tmux pane-base-index")?;
-
-    let pane_base = if pane_base_output.status.success() {
-        let output_str = String::from_utf8(pane_base_output.stdout)?
-            .trim()
-            .to_string();
-        if output_str.is_empty() {
-            0 // Default to 0 if empty
-        } else {
-            output_str.parse::<u32>()
-                .context("Failed to parse pane-base-index as u32")?
-        }
-    } else {
-        0 // Default to 0 on error
-    };
-
-    Ok((window_base, pane_base))
-}
-
-/// Get current tmux context information
-///
-/// Returns a TmuxContextInfo struct with details about the current tmux environment.
-/// If not in tmux, returns TmuxContextInfo with in_tmux: false and all Optional fields as None.
-fn get_current_tmux_context() -> Result<TmuxContextInfo> {
-    // Check if we're in tmux
-    if std::env::var("TMUX").is_err() {
-        return Ok(TmuxContextInfo::default());
-    }
-
-    // Get index bases first
-    let (window_base, pane_base) = get_tmux_index_bases()?;
-
-    // Query all context in one call with pipe-delimited format
-    let output = Command::new("tmux")
-        .args(&[
-            "display-message",
-            "-p",
-            "#{session_name}|#{window_index}|#{window_name}|#{pane_index}|#{window_active}|#{pane_active}|#{pane_id}|#{window_id}",
-        ])
-        .output()
-        .context("Failed to query tmux context")?;
-
-    if !output.status.success() {
-        // Not in tmux, return default
-        return Ok(TmuxContextInfo::default());
-    }
-
-    let output_str = String::from_utf8(output.stdout)?;
-    let trimmed = output_str.trim();
-
-    // Parse pipe-delimited output
-    let parts: Vec<&str> = trimmed.split('|').collect();
-    if parts.len() < 8 {
-        // Malformed output, return default
-        return Ok(TmuxContextInfo::default());
-    }
-
-    let session_name = if !parts[0].is_empty() {
-        Some(parts[0].to_string())
-    } else {
-        None
-    };
-
-    let window_index = if !parts[1].is_empty() {
-        parts[1].parse::<u32>().ok()
-    } else {
-        None
-    };
-
-    let window_name = if !parts[2].is_empty() {
-        Some(parts[2].to_string())
-    } else {
-        None
-    };
-
-    let pane_index = if !parts[3].is_empty() {
-        parts[3].parse::<u32>().ok()
-    } else {
-        None
-    };
-
-    let window_active = match parts[4].trim() {
-        "1" => Some(true),
-        "0" => Some(false),
-        _ => None,
-    };
-
-    let pane_active = match parts[5].trim() {
-        "1" => Some(true),
-        "0" => Some(false),
-        _ => None,
-    };
-
-    let pane_id = if !parts[6].is_empty() {
-        Some(parts[6].to_string())
-    } else {
-        None
-    };
-
-    let window_id = if !parts[7].is_empty() {
-        Some(parts[7].to_string())
-    } else {
-        None
-    };
-
-    Ok(TmuxContextInfo {
-        in_tmux: true,
-        session_name,
-        window_index,
-        window_name,
-        pane_index,
-        window_active,
-        pane_active,
-        pane_id,
-        window_id,
-        window_index_base: window_base,
-        pane_index_base: pane_base,
-    })
-}
-
-/// Check if strict mode is enabled via environment variable
-/// Returns true (strict) by default, false if NABI_TMUX_STRICT=0
-fn check_strictness() -> bool {
-    match std::env::var("NABI_TMUX_STRICT") {
-        Ok(val) => val != "0" && val.to_lowercase() != "false",
-        Err(_) => true, // Default to strict mode
-    }
-}
-
-/// Validate that requested session matches current context
-/// Returns Ok(mismatch_flag) in non-strict mode, Err(exit_code) in strict mode
-fn validate_session_match(
-    requested_session: Option<&str>,
-    current_context: &TmuxContextInfo,
-    strict: bool,
-) -> Result<bool, i32> {
-    // If no session requested, no validation needed
-    let requested = match requested_session {
-        None => return Ok(false), // No mismatch
-        Some(s) => s,
-    };
-
-    // If not in tmux, can't validate
-    if !current_context.in_tmux {
-        return Ok(false); // No mismatch (can't determine)
-    }
-
-    // Check if sessions match
-    let current = current_context.session_name.as_deref().unwrap_or("");
-    if requested == current {
-        return Ok(false); // No mismatch - sessions match
-    }
-
-    // Mismatch detected
-    if strict {
-        // Strict mode: return error with exit code 2
-        return Err(2);
-    } else {
-        // Non-strict mode: emit warning and continue
-        eprintln!("Warning: Session mismatch. Requested: '{}', Current: '{}'. Continuing in non-strict mode.", requested, current);
-        return Ok(true); // Mismatch flag set
-    }
-}
-
-
 #[derive(Debug, Serialize, Deserialize)]
 struct SessionInfo {
     name: String,
@@ -514,8 +274,6 @@ struct SessionInfo {
     created: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     is_claude_tui: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    is_active: Option<bool>,
 }
 
 /// Check if a session has Claude TUI panes by querying pane processes
@@ -570,9 +328,6 @@ fn check_session_has_claude_tui(session_name: &str) -> bool {
 
 /// Query tmux for list of sessions with consistent, predictable output
 fn list_tmux_sessions(format: &str, filter: Option<&str>) -> Result<()> {
-    // Get current context for json+context format and active session marking
-    let context = get_current_tmux_context().unwrap_or_default();
-
     // Query all session information in one call for consistency
     let output = Command::new("tmux")
         .args(&[
@@ -624,16 +379,12 @@ fn list_tmux_sessions(format: &str, filter: Option<&str>) -> Result<()> {
         // Query the first window's foreground process to detect Claude TUI
         let is_claude = check_session_has_claude_tui(session_name);
 
-        // Mark as active if this is the current session
-        let is_active = context.session_name.as_deref() == Some(session_name);
-
         sessions.push(SessionInfo {
             name: session_name.to_string(),
             windows: window_count,
             attached,
             created: created_str,
             is_claude_tui: Some(is_claude),
-            is_active: if is_active { Some(true) } else { None },
         });
     }
 
@@ -642,27 +393,10 @@ fn list_tmux_sessions(format: &str, filter: Option<&str>) -> Result<()> {
 
     match format {
         "json" => {
-            // Output as JSON array for structured parsing (backward compatible)
+            // Output as JSON array for structured parsing
             let json = serde_json::to_string_pretty(&sessions)
                 .context("Failed to serialize sessions to JSON")?;
             println!("{}", json);
-        }
-        "json+context" => {
-            // Output with invocation context wrapper
-            let wrapped = serde_json::json!({
-                "version": 2,
-                "invocation_context": {
-                    "in_tmux": context.in_tmux,
-                    "session_name": context.session_name,
-                    "window_index": context.window_index,
-                    "window_name": context.window_name,
-                    "pane_index": context.pane_index,
-                    "window_index_base": context.window_index_base,
-                    "pane_index_base": context.pane_index_base
-                },
-                "sessions": sessions
-            });
-            println!("{}", serde_json::to_string_pretty(&wrapped)?);
         }
         "full" => {
             // Human-readable format with metadata
@@ -690,28 +424,12 @@ fn list_tmux_sessions(format: &str, filter: Option<&str>) -> Result<()> {
 struct WindowInfo {
     index: u32,
     name: String,
-    pane_count: u32,
-    is_active: bool,
 }
 
 /// Query tmux for list of windows in a session
-fn list_tmux_windows(session: &str, format: &str, no_strict: bool) -> Result<()> {
-    // Get current context for validation and json+context format
-    let context = get_current_tmux_context().unwrap_or_default();
-
-    // Validate session match (strict by default unless no_strict=true)
-    let strict = !no_strict && check_strictness();
-    let mismatch = match validate_session_match(Some(session), &context, strict) {
-        Ok(m) => m,
-        Err(exit_code) => {
-            eprintln!("Error: Session mismatch. Expected '{}', currently in '{:?}'",
-                session, context.session_name);
-            std::process::exit(exit_code);
-        }
-    };
-
+fn list_tmux_windows(session: &str, format: &str) -> Result<()> {
     let output = Command::new("tmux")
-        .args(&["list-windows", "-t", session, "-F", "#{window_index}|#{window_name}|#{window_panes}|#{window_active}"])
+        .args(&["list-windows", "-t", session, "-F", "#{window_index}:#{window_name}"])
         .output()
         .context(format!("Failed to query windows for session '{}'", session))?;
 
@@ -733,18 +451,14 @@ fn list_tmux_windows(session: &str, format: &str, no_strict: bool) -> Result<()>
             continue;
         }
 
-        let parts: Vec<&str> = entry.split('|').collect();
-        if parts.len() >= 4 {
+        let parts: Vec<&str> = entry.split(':').collect();
+        if parts.len() >= 2 {
             let index = parts[0].trim().parse::<u32>().unwrap_or(0);
-            let name = parts[1].trim().to_string();
-            let pane_count = parts[2].trim().parse::<u32>().unwrap_or(1);
-            let is_active = parts[3].trim() == "1";
+            let name = parts[1..].join(":"); // Handle names with colons
 
             windows.push(WindowInfo {
                 index,
                 name,
-                pane_count,
-                is_active,
             });
         }
     }
@@ -757,21 +471,6 @@ fn list_tmux_windows(session: &str, format: &str, no_strict: bool) -> Result<()>
             let json = serde_json::to_string_pretty(&windows)
                 .context("Failed to serialize windows to JSON")?;
             println!("{}", json);
-        }
-        "json+context" => {
-            // Output with invocation context wrapper
-            let wrapped = serde_json::json!({
-                "version": 2,
-                "invocation_context": {
-                    "session_name": session,
-                    "window_index": context.window_index,
-                    "window_index_base": context.window_index_base,
-                    "pane_index_base": context.pane_index_base,
-                    "mismatch": mismatch
-                },
-                "windows": windows
-            });
-            println!("{}", serde_json::to_string_pretty(&wrapped)?);
         }
         "id" => {
             for window in &windows {
@@ -796,55 +495,18 @@ fn list_tmux_windows(session: &str, format: &str, no_strict: bool) -> Result<()>
 
 #[derive(Debug, Serialize, Deserialize)]
 struct PaneInfo {
-    /// Pane number (respects pane-base-index)
+    /// Pane number (1-based, user-friendly - use this in commands)
     pane: u32,
-    /// Legacy full target format
-    #[serde(skip_serializing_if = "Option::is_none")]
-    target: Option<String>,
-    /// Is this pane active
-    #[serde(skip_serializing_if = "Option::is_none")]
-    is_active: Option<bool>,
-    /// Stable pane ID (e.g., "%0")
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pane_id: Option<String>,
-    /// Stable window ID (e.g., "@0")
-    #[serde(skip_serializing_if = "Option::is_none")]
-    window_id: Option<String>,
-    /// Full send-prompt target format
-    #[serde(skip_serializing_if = "Option::is_none")]
-    send_prompt_target: Option<String>,
-    /// Tmux target (same as send_prompt_target)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tmux_target: Option<String>,
-    /// Short target format (:window.pane)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    target_shorthand: Option<String>,
-    /// Minimal target format
-    #[serde(skip_serializing_if = "Option::is_none")]
-    target_minimal: Option<String>,
+    /// Full target format: session:window.pane (uses 0-based index for tmux)
+    target: String,
 }
 
 /// Query tmux for list of panes in a window
-fn list_tmux_panes(session: &str, window: &str, format: &str, no_strict: bool) -> Result<()> {
-    // Get current context for validation and json+context format
-    let context = get_current_tmux_context().unwrap_or_default();
-
-    // Validate session match
-    let strict = !no_strict && check_strictness();
-    let mismatch = match validate_session_match(Some(session), &context, strict) {
-        Ok(m) => m,
-        Err(exit_code) => {
-            eprintln!("Error: Session mismatch. Expected '{}', currently in '{:?}'",
-                session, context.session_name);
-            std::process::exit(exit_code);
-        }
-    };
-
+fn list_tmux_panes(session: &str, window: &str, format: &str) -> Result<()> {
     let target = format!("{}:{}", session, window);
 
     let output = Command::new("tmux")
-        .args(&["list-panes", "-t", &target, "-F",
-               "#{pane_index}|#{pane_active}|#{pane_id}|#{window_id}|#{window_panes}"])
+        .args(&["list-panes", "-t", &target, "-F", "#{pane_index}"])
         .output()
         .context(format!("Failed to query panes for {}:{}", session, window))?;
 
@@ -859,42 +521,20 @@ fn list_tmux_panes(session: &str, window: &str, format: &str, no_strict: bool) -
 
     let stdout = String::from_utf8(output.stdout)?;
     let mut panes: Vec<PaneInfo> = Vec::new();
-    let mut window_panes_count = 1u32; // Default if not found
 
     for line in stdout.lines() {
-        let entry = line.trim();
-        if entry.is_empty() {
+        let pane_index = line.trim();
+        if pane_index.is_empty() {
             continue;
         }
 
-        let parts: Vec<&str> = entry.split('|').collect();
-        if parts.len() >= 5 {
-            let idx = parts[0].trim().parse::<u32>().unwrap_or(0);
-            let is_active = parts[1].trim() == "1";
-            let pane_id = parts[2].trim().to_string();
-            let window_id = parts[3].trim().to_string();
-            window_panes_count = parts[4].trim().parse::<u32>().unwrap_or(1);
-
-            // Generate all target format variants
-            let send_prompt_target = format!("{}:{}.{}", session, window, idx);
-            let tmux_target = send_prompt_target.clone();
-            let target_shorthand = format!(":{}.{}", window, idx);
-            let target_minimal = if window_panes_count == 1 {
-                format!(":{}", window)
-            } else {
-                format!(":{}.{}", window, idx)
-            };
-
+        if let Ok(idx) = pane_index.parse::<u32>() {
+            // tmux pane_index already respects pane-base-index setting
+            // If user has pane-base-index=1, idx will be 1-based
+            // We use it directly as the pane number
             panes.push(PaneInfo {
-                pane: idx,
-                target: Some(send_prompt_target.clone()), // Legacy field
-                is_active: Some(is_active),
-                pane_id: Some(pane_id),
-                window_id: Some(window_id),
-                send_prompt_target: Some(send_prompt_target),
-                tmux_target: Some(tmux_target),
-                target_shorthand: Some(target_shorthand),
-                target_minimal: Some(target_minimal),
+                pane: idx, // Use tmux's pane_index directly (respects pane-base-index)
+                target: format!("{}:{}.{}", session, window, idx), // tmux uses this index
             });
         }
     }
@@ -908,25 +548,14 @@ fn list_tmux_panes(session: &str, window: &str, format: &str, no_strict: bool) -
                 .context("Failed to serialize panes to JSON")?;
             println!("{}", json);
         }
-        "json+context" => {
-            // Output with invocation context wrapper
-            let wrapped = serde_json::json!({
-                "version": 2,
-                "invocation_context": {
-                    "session_name": session,
-                    "window_index": context.window_index,
-                    "window_name": context.window_name,
-                    "pane_index": context.pane_index,
-                    "pane_index_base": context.pane_index_base,
-                    "mismatch": mismatch
-                },
-                "panes": panes
-            });
-            println!("{}", serde_json::to_string_pretty(&wrapped)?);
-        }
         "id" => {
+            // Extract 0-based index from target (session:window.0)
             for pane in &panes {
-                println!("{}", pane.pane);
+                if let Some(dot_pos) = pane.target.rfind('.') {
+                    if let Ok(idx) = pane.target[dot_pos + 1..].parse::<u32>() {
+                        println!("{}", idx);
+                    }
+                }
             }
         }
         "number" | "pane" => {
@@ -937,9 +566,7 @@ fn list_tmux_panes(session: &str, window: &str, format: &str, no_strict: bool) -
         _ => {
             // full format: session:window.pane
             for pane in &panes {
-                if let Some(ref target) = pane.send_prompt_target {
-                    println!("{}", target);
-                }
+                println!("{}", pane.target);
             }
         }
     }
