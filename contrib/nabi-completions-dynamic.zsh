@@ -112,26 +112,25 @@ _nabi_tmux_send_prompt_pane() {
         return 1
     fi
 
+    # Optimize: Use string manipulation instead of regex (much faster)
     # Extract unique session:window pairs for implicit pane 1 format
     local -A session_windows
+    local pane sw
     for pane in $all_panes; do
-        # Extract session:window from session:window.pane
-        if [[ "$pane" =~ ^([^:]+:[^\.]+)\. ]]; then
-            session_windows[${match[1]}]=1
-        fi
+        # Fast string manipulation: remove everything after last dot
+        sw=${pane%.*}
+        session_windows[$sw]=1
     done
     
     # Add session:window format (implicit pane 1)
-    for sw in ${(k)session_windows}; do
-        targets+=("$sw")
-    done
+    targets+=(${(k)session_windows})
     
     # Add all panes in session:window.pane format
     targets+=($all_panes)
 
-    # Remove duplicates and sort
+    # Remove duplicates (already unique, but safe)
     targets=(${(u)targets})
-    _nabi_debug_log "Generated ${#targets} targets: ${#targets[@]} total"
+    _nabi_debug_log "Generated ${#targets} targets"
 
     _describe 'pane target' targets
 }
