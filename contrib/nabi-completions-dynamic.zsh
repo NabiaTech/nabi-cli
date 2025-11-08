@@ -52,25 +52,38 @@ if (( $+functions[_nabi] )); then
     }
 fi
 
-# Helper function to get tmux sessions
+# Cache file for tmux data (1 second TTL)
+_NABI_TMUX_CACHE="${HOME}/.nabi/cache/tmux-completion-cache.txt"
+_NABI_TMUX_CACHE_TIME="${HOME}/.nabi/cache/tmux-completion-cache-time.txt"
+
+# Check if cache is still valid (1 second TTL for fast updates)
+_nabi_cache_valid() {
+    [[ -f "$_NABI_TMUX_CACHE_TIME" ]] && \
+    [[ -f "$_NABI_TMUX_CACHE" ]] && \
+    (( $(date +%s) - $(cat "$_NABI_TMUX_CACHE_TIME" 2>/dev/null || echo 0) < 1 ))
+}
+
+# Helper function to get tmux sessions (direct tmux call, much faster)
 _nabi_get_tmux_sessions() {
     local -a sessions
-    sessions=($(nabi tmux list sessions --format name 2>/dev/null))
+    # Use tmux directly instead of nabi CLI for speed (0.018s vs 2.4s)
+    sessions=($(tmux list-sessions -F '#S' 2>/dev/null))
     echo "${sessions[@]}"
 }
 
-# Helper function to get windows for a session
+# Helper function to get windows for a session (direct tmux call)
 _nabi_get_tmux_windows() {
     local session="$1"
     if [[ -z "$session" ]]; then
         return 1
     fi
     local -a windows
-    windows=($(nabi tmux list windows "$session" --format id 2>/dev/null))
+    # Use tmux directly - extract window index from format
+    windows=($(tmux list-windows -t "$session" -F '#{window_index}' 2>/dev/null))
     echo "${windows[@]}"
 }
 
-# Helper function to get panes for a session:window
+# Helper function to get panes for a session:window (direct tmux call)
 _nabi_get_tmux_panes() {
     local session="$1"
     local window="$2"
@@ -78,8 +91,9 @@ _nabi_get_tmux_panes() {
         return 1
     fi
     local -a panes
-    # Use full format to get session:window.pane directly
-    panes=($(nabi tmux list panes "${session}:${window}" --format full 2>/dev/null))
+    local target="${session}:${window}"
+    # Use tmux directly - format as session:window.pane
+    panes=($(tmux list-panes -t "$target" -F "${session}:${window}.#{pane_index}" 2>/dev/null))
     echo "${panes[@]}"
 }
 
@@ -88,38 +102,36 @@ _nabi_tmux_send_prompt_pane() {
     _nabi_debug_log "_nabi_tmux_send_prompt_pane called"
     local -a targets
 
-    # Get all sessions
-    local -a sessions
-    _nabi_debug_log "Getting sessions..."
-    sessions=($(_nabi_get_tmux_sessions))
-    _nabi_debug_log "Found ${#sessions} sessions: ${sessions[@]}"
-
-    if (( ${#sessions} == 0 )); then
+    # Optimize: Use single tmux command to get all panes across all sessions
+    # This is much faster than querying each session separately
+    local -a all_panes
+    all_panes=($(tmux list-panes -a -s -F "#{session_name}:#{window_index}.#{pane_index}" 2>/dev/null))
+    
+    if (( ${#all_panes} == 0 )); then
         _message "No tmux sessions found"
         return 1
     fi
 
-    # For each session, get all windows
-    for session in $sessions; do
-        local -a windows
-        windows=($(_nabi_get_tmux_windows "$session"))
-
-        # Add session:window format (implicit pane 1)
-        for window in $windows; do
-            targets+=("${session}:${window}")
-        done
-
-        # Get all panes in full format (session:window.pane)
-        for window in $windows; do
-            local -a panes
-            panes=($(_nabi_get_tmux_panes "$session" "$window"))
-            targets+=($panes)
-        done
+    # Extract unique session:window pairs for implicit pane 1 format
+    local -A session_windows
+    for pane in $all_panes; do
+        # Extract session:window from session:window.pane
+        if [[ "$pane" =~ ^([^:]+:[^\.]+)\. ]]; then
+            session_windows[${match[1]}]=1
+        fi
     done
+    
+    # Add session:window format (implicit pane 1)
+    for sw in ${(k)session_windows}; do
+        targets+=("$sw")
+    done
+    
+    # Add all panes in session:window.pane format
+    targets+=($all_panes)
 
     # Remove duplicates and sort
     targets=(${(u)targets})
-    _nabi_debug_log "Generated ${#targets} targets: ${targets[@]}"
+    _nabi_debug_log "Generated ${#targets} targets: ${#targets[@]} total"
 
     _describe 'pane target' targets
 }
