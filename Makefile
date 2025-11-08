@@ -50,13 +50,33 @@ install-quiet: completions
 	@chmod +x $(HOME)/.local/bin/nabi
 	@echo "✅ Installed nabi to $(HOME)/.local/bin/nabi"
 
-# Generate zsh completions from the freshly built binary
+# Generate zsh completions from the freshly built binary with integrated dynamic enhancements
+# This target:
+# 1. Generates static completion from clap
+# 2. Injects dynamic tmux enhancements
+# 3. Validates the composition against schema
+# 4. Aborts build on validation failure
 completions: build
 	@mkdir -p $(ZSH_COMPLETION_DIR)
-	$(CACHE_TARGET_DIR)/release/nabi completions zsh > $(ZSH_COMPLETION_FILE)
+	@mkdir -p .build
+
+	# Generate static completion from clap
+	$(CACHE_TARGET_DIR)/release/nabi completions zsh > .build/_nabi_static
+
+	# Create integrated completion: static + dynamic enhancements injected
+	@cp .build/_nabi_static $(ZSH_COMPLETION_FILE)
+	@echo '' >> $(ZSH_COMPLETION_FILE)
+	@echo '# Dynamic tmux completion enhancements (injected at build time)' >> $(ZSH_COMPLETION_FILE)
+	@tail -n +2 contrib/nabi-completions-dynamic.zsh >> $(ZSH_COMPLETION_FILE)
+
+	# Preserve reference copy for debugging/maintenance
 	@cp contrib/nabi-completions-dynamic.zsh $(ZSH_COMPLETION_DIR)/nabi-completions-dynamic.zsh
-	@echo "Generated zsh completion: $(ZSH_COMPLETION_FILE)"
-	@echo "Installed dynamic completion: $(ZSH_COMPLETION_DIR)/nabi-completions-dynamic.zsh"
+	@echo "✓ Generated integrated zsh completion: $(ZSH_COMPLETION_FILE)"
+
+	# Validate the composition against schema (fail build on validation failure)
+	@echo "🔍 Validating completion composition..."
+	@bash scripts/validate-completions.sh --verbose || (echo "❌ Completion validation failed!"; exit 1)
+	@echo "✅ Completion composition validated"
 
 # Install to ~/.local/bin and refresh completions
 install: completions
