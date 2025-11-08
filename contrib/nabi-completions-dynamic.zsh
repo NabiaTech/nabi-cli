@@ -53,15 +53,55 @@ if (( $+functions[_nabi] )); then
     }
 fi
 
-# Cache file for tmux data (1 second TTL)
+# Cache file for tmux data (2 second TTL for fast updates)
 _NABI_TMUX_CACHE="${HOME}/.nabi/cache/tmux-completion-cache.txt"
 _NABI_TMUX_CACHE_TIME="${HOME}/.nabi/cache/tmux-completion-cache-time.txt"
 
-# Check if cache is still valid (1 second TTL for fast updates)
+# Check if cache is still valid (2 second TTL for fast updates)
 _nabi_cache_valid() {
     [[ -f "$_NABI_TMUX_CACHE_TIME" ]] && \
     [[ -f "$_NABI_TMUX_CACHE" ]] && \
-    (( $(date +%s) - $(cat "$_NABI_TMUX_CACHE_TIME" 2>/dev/null || echo 0) < 1 ))
+    (( $(date +%s) - $(cat "$_NABI_TMUX_CACHE_TIME" 2>/dev/null || echo 0) < 2 ))
+}
+
+# Load cached targets or generate new ones
+_nabi_get_cached_targets() {
+    if _nabi_cache_valid; then
+        # Cache is valid, load from file
+        local -a cached
+        cached=($(cat "$_NABI_TMUX_CACHE" 2>/dev/null))
+        echo "${cached[@]}"
+        return 0
+    fi
+    
+    # Cache invalid or missing, generate fresh data
+    local -a all_panes
+    all_panes=($(tmux list-panes -a -s -F "#{session_name}:#{window_index}.#{pane_index}" 2>/dev/null))
+    
+    if (( ${#all_panes} == 0 )); then
+        return 1
+    fi
+
+    # Extract unique session:window pairs
+    local -A session_windows
+    local pane sw
+    for pane in $all_panes; do
+        sw=${pane%.*}
+        session_windows[$sw]=1
+    done
+    
+    # Build targets array
+    local -a targets
+    targets+=(${(k)session_windows})
+    targets+=($all_panes)
+    targets=(${(u)targets})
+    
+    # Save to cache
+    mkdir -p "${HOME}/.nabi/cache" 2>/dev/null
+    echo "${targets[@]}" > "$_NABI_TMUX_CACHE"
+    echo $(date +%s) > "$_NABI_TMUX_CACHE_TIME"
+    
+    echo "${targets[@]}"
 }
 
 # Helper function to get tmux sessions (direct tmux call, much faster)
@@ -103,36 +143,15 @@ _nabi_tmux_send_prompt_pane() {
     _nabi_debug_log "_nabi_tmux_send_prompt_pane called"
     local -a targets
 
-    # Optimize: Use single tmux command to get all panes across all sessions
-    # This is much faster than querying each session separately
-    local -a all_panes
-    all_panes=($(tmux list-panes -a -s -F "#{session_name}:#{window_index}.#{pane_index}" 2>/dev/null))
-
-    if (( ${#all_panes} == 0 )); then
+    # Use cached targets if available (2 second TTL)
+    targets=($(_nabi_get_cached_targets))
+    
+    if (( ${#targets} == 0 )); then
         _message "No tmux sessions found"
         return 1
     fi
 
-    # Optimize: Use string manipulation instead of regex (much faster)
-    # Extract unique session:window pairs for implicit pane 1 format
-    local -A session_windows
-    local pane sw
-    for pane in $all_panes; do
-        # Fast string manipulation: remove everything after last dot
-        sw=${pane%.*}
-        session_windows[$sw]=1
-    done
-
-    # Add session:window format (implicit pane 1)
-    targets+=(${(k)session_windows})
-
-    # Add all panes in session:window.pane format
-    targets+=($all_panes)
-
-    # Remove duplicates (already unique, but safe)
-    targets=(${(u)targets})
-    _nabi_debug_log "Generated ${#targets} targets"
-
+    _nabi_debug_log "Using ${#targets} targets (cached or fresh)"
     _describe 'pane target' targets
 }
 
