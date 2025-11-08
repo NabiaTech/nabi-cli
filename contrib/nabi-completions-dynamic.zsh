@@ -10,13 +10,16 @@
 # This hooks into the clap-generated completions by overriding the _nabi function
 # to add dynamic completions for specific arguments.
 
+# XDG-compliant cache directory (matches Rust codebase)
+_NABI_CACHE_DIR="${XDG_CACHE_HOME:-${HOME}/.cache}/nabi"
+
 # Debug log file (set _NABI_DEBUG=1 to enable)
-_NABI_COMPLETION_DEBUG_LOG="${HOME}/.nabi/cache/completion-debug.log"
+_NABI_COMPLETION_DEBUG_LOG="${_NABI_CACHE_DIR}/completion-debug.log"
 
 # Debug logging function (only logs if _NABI_DEBUG is set)
 _nabi_debug_log() {
     [[ -n "$_NABI_DEBUG" ]] || return 0
-    mkdir -p "${HOME}/.nabi/cache" 2>/dev/null
+    mkdir -p "${_NABI_CACHE_DIR}" 2>/dev/null
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$_NABI_COMPLETION_DEBUG_LOG"
 }
 
@@ -54,8 +57,9 @@ if (( $+functions[_nabi] )); then
 fi
 
 # Cache file for tmux data (2 second TTL for fast updates)
-_NABI_TMUX_CACHE="${HOME}/.nabi/cache/tmux-completion-cache.txt"
-_NABI_TMUX_CACHE_TIME="${HOME}/.nabi/cache/tmux-completion-cache-time.txt"
+# XDG-compliant: uses $XDG_CACHE_HOME/nabi or ~/.cache/nabi
+_NABI_TMUX_CACHE="${_NABI_CACHE_DIR}/tmux-completion-cache.txt"
+_NABI_TMUX_CACHE_TIME="${_NABI_CACHE_DIR}/tmux-completion-cache-time.txt"
 
 # Check if cache is still valid (2 second TTL for fast updates)
 _nabi_cache_valid() {
@@ -73,11 +77,11 @@ _nabi_get_cached_targets() {
         echo "${cached[@]}"
         return 0
     fi
-    
+
     # Cache invalid or missing, generate fresh data
     local -a all_panes
     all_panes=($(tmux list-panes -a -s -F "#{session_name}:#{window_index}.#{pane_index}" 2>/dev/null))
-    
+
     if (( ${#all_panes} == 0 )); then
         return 1
     fi
@@ -89,18 +93,18 @@ _nabi_get_cached_targets() {
         sw=${pane%.*}
         session_windows[$sw]=1
     done
-    
+
     # Build targets array
     local -a targets
     targets+=(${(k)session_windows})
     targets+=($all_panes)
     targets=(${(u)targets})
-    
-    # Save to cache
-    mkdir -p "${HOME}/.nabi/cache" 2>/dev/null
+
+    # Save to cache (XDG-compliant location)
+    mkdir -p "${_NABI_CACHE_DIR}" 2>/dev/null
     echo "${targets[@]}" > "$_NABI_TMUX_CACHE"
     echo $(date +%s) > "$_NABI_TMUX_CACHE_TIME"
-    
+
     echo "${targets[@]}"
 }
 
@@ -145,7 +149,7 @@ _nabi_tmux_send_prompt_pane() {
 
     # Use cached targets if available (2 second TTL)
     targets=($(_nabi_get_cached_targets))
-    
+
     if (( ${#targets} == 0 )); then
         _message "No tmux sessions found"
         return 1
