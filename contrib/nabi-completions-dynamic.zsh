@@ -174,8 +174,8 @@ _nabi_tmux_list_panes_window() {
 # Clap uses :argument:_default for positional arguments, so we override _default
 # to check the context and provide dynamic completions
 
-# Store original _default function
-if (( ! $+functions[_nabi_original_default] )); then
+# Store original _default function if it exists
+if (( $+functions[_default] )) && (( ! $+functions[_nabi_original_default] )); then
     functions[_nabi_original_default]=$functions[_default]
 fi
 
@@ -233,6 +233,11 @@ _default() {
         fi
     fi
 
-    # Fall back to original _default for everything else
-    _nabi_original_default "$@"
+    # Fall back to original _default if it exists, otherwise use built-in file completion
+    if (( $+functions[_nabi_original_default] )); then
+        _nabi_original_default "$@"
+    else
+        # No original _default, use built-in file completion
+        _files "$@"
+    fi
 }
