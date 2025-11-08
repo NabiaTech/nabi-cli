@@ -10,11 +10,12 @@
 # This hooks into the clap-generated completions by overriding the _nabi function
 # to add dynamic completions for specific arguments.
 
-# Debug log file
+# Debug log file (set _NABI_DEBUG=1 to enable)
 _NABI_COMPLETION_DEBUG_LOG="${HOME}/.nabi/cache/completion-debug.log"
 
-# Debug logging function
+# Debug logging function (only logs if _NABI_DEBUG is set)
 _nabi_debug_log() {
+    [[ -n "$_NABI_DEBUG" ]] || return 0
     mkdir -p "${HOME}/.nabi/cache" 2>/dev/null
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$_NABI_COMPLETION_DEBUG_LOG"
 }
@@ -106,7 +107,7 @@ _nabi_tmux_send_prompt_pane() {
     # This is much faster than querying each session separately
     local -a all_panes
     all_panes=($(tmux list-panes -a -s -F "#{session_name}:#{window_index}.#{pane_index}" 2>/dev/null))
-    
+
     if (( ${#all_panes} == 0 )); then
         _message "No tmux sessions found"
         return 1
@@ -121,10 +122,10 @@ _nabi_tmux_send_prompt_pane() {
         sw=${pane%.*}
         session_windows[$sw]=1
     done
-    
+
     # Add session:window format (implicit pane 1)
     targets+=(${(k)session_windows})
-    
+
     # Add all panes in session:window.pane format
     targets+=($all_panes)
 
