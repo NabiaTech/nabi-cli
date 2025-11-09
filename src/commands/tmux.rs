@@ -143,6 +143,9 @@ PANE FORMAT:
     /// The command validates pane existence before capture and provides
     /// clear error messages for invalid panes.
     #[command(after_help = "EXAMPLES:
+  # Capture current pane (last 250 lines) with bat formatting
+  nabi tmux capture
+
   # Capture last 250 lines (default) with bat formatting
   nabi tmux capture cross-pane:3.2
 
@@ -158,15 +161,17 @@ PANE FORMAT:
 PANE FORMAT:
   session:window.pane  - Full specification (e.g., cross-pane:3.2)
   session:window       - Implicit pane 1 (e.g., mywindow:1 = mywindow:1.1)
+  (omitted)            - Current active pane (when running inside tmux)
 
   Where: window and pane numbers are 1-based (not 0-based)")]
     Capture {
         /// Tmux pane target (format: session:window.pane or session:window)
         ///
         /// Examples: cross-pane:3.2, schema-driven:1, mywindow:2.1
+        /// If not specified, captures the current active pane
         /// Windows and panes use 1-based numbering
         #[arg(value_name = "PANE", value_hint = ValueHint::Other)]
-        pane: String,
+        pane: Option<String>,
 
         /// Number of lines to capture (default: 250)
         ///
@@ -300,7 +305,7 @@ pub fn handle_tmux_commands(cmd: TmuxCommands) -> Result<()> {
             lines,
             format,
             no_bat,
-        } => handle_capture_pane(&pane, lines, &format, !no_bat),
+        } => handle_capture_pane(pane.as_deref(), lines, &format, !no_bat),
         TmuxCommands::List(list_cmd) => handle_list_commands(list_cmd),
     }
 }
@@ -1337,20 +1342,42 @@ fn handle_send_prompt(pane: &str, message: &str, delay: u64) -> Result<()> {
 ///
 /// Handles both text (bat-formatted) and JSON output formats.
 /// Validates pane existence before capture.
-fn handle_capture_pane(pane: &str, lines: u32, format: &str, use_bat: bool) -> Result<()> {
-    // Validate pane format early
-    parse_pane_target(pane)
-        .with_context(|| format!("Invalid pane target '{}'", pane))?;
+/// If no pane is specified, captures the current active pane.
+fn handle_capture_pane(pane: Option<&str>, lines: u32, format: &str, use_bat: bool) -> Result<()> {
+    // Determine the target pane
+    let target_pane = if let Some(pane_spec) = pane {
+        // User specified a pane - validate format
+        parse_pane_target(pane_spec)
+            .with_context(|| format!("Invalid pane target '{}'", pane_spec))?;
+        pane_spec.to_string()
+    } else {
+        // No pane specified - get current active pane
+        let context = get_current_tmux_context()
+            .with_context(|| "Failed to get current tmux context")?;
+
+        if !context.in_tmux {
+            anyhow::bail!("Not running inside tmux. Please specify a pane target explicitly (e.g., 'session:window.pane')");
+        }
+
+        let session = context.session_name
+            .ok_or_else(|| anyhow::anyhow!("Could not determine current session"))?;
+        let window = context.window_index
+            .ok_or_else(|| anyhow::anyhow!("Could not determine current window"))?;
+        let pane_idx = context.pane_index
+            .ok_or_else(|| anyhow::anyhow!("Could not determine current pane"))?;
+
+        format!("{}:{}.{}", session, window, pane_idx)
+    };
 
     // Validate pane exists
     let list_output = Command::new("tmux")
-        .args(&["list-panes", "-t", pane, "-F", "#{pane_index}"])
+        .args(&["list-panes", "-t", &target_pane, "-F", "#{pane_index}"])
         .output()
-        .with_context(|| format!("Failed to validate pane existence for '{}'", pane))?;
+        .with_context(|| format!("Failed to validate pane existence for '{}'", target_pane))?;
 
     if !list_output.status.success() {
         let stderr = String::from_utf8_lossy(&list_output.stderr);
-        anyhow::bail!("Pane '{}' does not exist: {}", pane, stderr.trim());
+        anyhow::bail!("Pane '{}' does not exist: {}", target_pane, stderr.trim());
     }
 
     // Build capture command
@@ -1359,7 +1386,7 @@ fn handle_capture_pane(pane: &str, lines: u32, format: &str, use_bat: bool) -> R
             "capture-pane".to_string(),
             "-p".to_string(),
             "-t".to_string(),
-            pane.to_string(),
+            target_pane.clone(),
             "-S".to_string(),
             format!("-{}", lines),
         ]
@@ -1368,18 +1395,18 @@ fn handle_capture_pane(pane: &str, lines: u32, format: &str, use_bat: bool) -> R
             "capture-pane".to_string(),
             "-p".to_string(),
             "-t".to_string(),
-            pane.to_string(),
+            target_pane.clone(),
         ]
     };
 
     let capture_output = Command::new("tmux")
         .args(&capture_args)
         .output()
-        .with_context(|| format!("Failed to capture pane content from '{}'", pane))?;
+        .with_context(|| format!("Failed to capture pane content from '{}'", target_pane))?;
 
     if !capture_output.status.success() {
         let stderr = String::from_utf8_lossy(&capture_output.stderr);
-        anyhow::bail!("Tmux capture-pane failed for '{}': {}", pane, stderr.trim());
+        anyhow::bail!("Tmux capture-pane failed for '{}': {}", target_pane, stderr.trim());
     }
 
     let content = String::from_utf8_lossy(&capture_output.stdout).trim().to_string();
@@ -1389,7 +1416,7 @@ fn handle_capture_pane(pane: &str, lines: u32, format: &str, use_bat: bool) -> R
             // JSON output format
             let timestamp = chrono::Utc::now().to_rfc3339();
             let json_output = serde_json::json!({
-                "pane": pane,
+                "pane": target_pane,
                 "lines": lines,
                 "timestamp": timestamp,
                 "content": content,
