@@ -125,15 +125,18 @@ PANE FORMAT:
         delay: u64,
     },
 
-    /// Capture pane content (last N lines with bat-formatted or JSON output)
+    /// Capture pane content (last N lines with plain text or JSON output)
     ///
     /// Captures the content of a tmux pane, defaulting to the last 250 lines.
-    /// Supports both human-readable (bat-formatted) and JSON output formats
+    /// Supports both human-readable (plain text) and JSON output formats
     /// for agentic workflows and machine-readable consumption.
+    /// Use --bat flag to enable bat syntax highlighting (opt-in).
     ///
     /// Output formats:
-    ///   - text: Human-readable output with bat syntax highlighting (default)
+    ///   - text: Human-readable plain text output (default)
     ///   - json: Structured JSON with metadata for agentic consumption
+    ///
+    /// Use --bat flag to enable bat syntax highlighting for text output.
     ///
     /// Common use cases:
     ///   - Capturing pane state for agent coordination
@@ -143,10 +146,13 @@ PANE FORMAT:
     /// The command validates pane existence before capture and provides
     /// clear error messages for invalid panes.
     #[command(after_help = "EXAMPLES:
-  # Capture current pane (last 250 lines) with bat formatting
+  # Capture current pane (last 250 lines, plain text)
   nabi tmux capture
 
-  # Capture last 250 lines (default) with bat formatting
+  # Capture with bat syntax highlighting
+  nabi tmux capture --bat
+
+  # Capture specific pane
   nabi tmux capture cross-pane:3.2
 
   # Capture last 100 lines
@@ -180,19 +186,20 @@ PANE FORMAT:
         #[arg(short = 'l', long, default_value = "250")]
         lines: u32,
 
-        /// Output format: text (default, bat-formatted) or json
+        /// Output format: text (default, plain text) or json
         ///
-        /// - text: Human-readable output with bat syntax highlighting
+        /// - text: Human-readable plain text output (use --bat for syntax highlighting)
         /// - json: Structured JSON with metadata for agentic consumption
         #[arg(long, default_value = "text")]
         format: String,
 
-        /// Disable bat formatting (fallback to plain text)
+        /// Enable bat formatting (disabled by default for performance)
         ///
-        /// When set, output will be plain text even if bat is available.
-        /// Useful for scripts that need raw content without formatting.
+        /// When set, attempts to use bat for syntax highlighting.
+        /// Falls back to plain text if bat is unavailable or fails.
+        /// Note: bat formatting is disabled by default to avoid performance issues.
         #[arg(long)]
-        no_bat: bool,
+        bat: bool,
     },
 
     /// Runtime introspection and discovery (sessions, windows, panes)
@@ -304,8 +311,8 @@ pub fn handle_tmux_commands(cmd: TmuxCommands) -> Result<()> {
             pane,
             lines,
             format,
-            no_bat,
-        } => handle_capture_pane(pane.as_deref(), lines, &format, !no_bat),
+            bat,
+        } => handle_capture_pane(pane.as_deref(), lines, &format, bat),
         TmuxCommands::List(list_cmd) => handle_list_commands(list_cmd),
     }
 }
@@ -1340,9 +1347,10 @@ fn handle_send_prompt(pane: &str, message: &str, delay: u64) -> Result<()> {
 
 /// Capture pane content and format output
 ///
-/// Handles both text (bat-formatted) and JSON output formats.
+/// Handles both text (plain text, optionally bat-formatted) and JSON output formats.
 /// Validates pane existence before capture.
 /// If no pane is specified, captures the current active pane.
+/// Bat formatting is opt-in via --bat flag to avoid performance issues.
 fn handle_capture_pane(pane: Option<&str>, lines: u32, format: &str, use_bat: bool) -> Result<()> {
     // Determine the target pane
     let target_pane = if let Some(pane_spec) = pane {
@@ -1431,32 +1439,51 @@ fn handle_capture_pane(pane: Option<&str>, lines: u32, format: &str, use_bat: bo
             // Text output format (default)
             if use_bat && !content.is_empty() {
                 // Try to use bat for syntax highlighting
-                let bat_result = Command::new("bat")
+                // Use a simpler approach: just pipe content through bat
+                let bat_output = Command::new("bat")
                     .args(&["--language", "text", "--color", "always", "--plain", "--paging", "never"])
                     .stdin(std::process::Stdio::piped())
-                    .stdout(std::process::Stdio::inherit())
-                    .stderr(std::process::Stdio::inherit())
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::null()) // Suppress bat errors to avoid noise
                     .spawn();
 
-                match bat_result {
+                match bat_output {
                     Ok(mut child) => {
                         if let Some(mut stdin) = child.stdin.take() {
                             use std::io::Write;
-                            if stdin.write_all(content.as_bytes()).is_ok() {
+                            // Write content and close stdin
+                            if stdin.write_all(content.as_bytes()).is_ok() && stdin.flush().is_ok() {
                                 drop(stdin); // Close stdin to signal EOF
-                                let _ = child.wait(); // Wait for bat to finish
-                                return Ok(());
+                                
+                                // Wait for bat to complete and get output
+                                // wait_with_output() consumes child, so we can't kill after
+                                match child.wait_with_output() {
+                                    Ok(output) => {
+                                        if output.status.success() {
+                                            print!("{}", String::from_utf8_lossy(&output.stdout));
+                                            return Ok(());
+                                        }
+                                        // If bat failed, fall through to plain text
+                                    }
+                                    Err(_) => {
+                                        // If wait fails, fall through to plain text
+                                    }
+                                }
+                            } else {
+                                // If write fails, kill and fall through
+                                let _ = child.kill();
                             }
+                        } else {
+                            // If we can't get stdin, kill and fall through
+                            let _ = child.kill();
                         }
-                        // If bat fails, fall through to plain text
-                        let _ = child.kill();
                     }
                     Err(_) => {} // bat not available, fall through
                 }
             }
 
             // Plain text output (fallback)
-            println!("{}", content);
+            print!("{}", content);
         }
     }
 
