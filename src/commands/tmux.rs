@@ -125,6 +125,71 @@ PANE FORMAT:
         delay: u64,
     },
 
+    /// Capture pane content (last N lines with bat-formatted or JSON output)
+    ///
+    /// Captures the content of a tmux pane, defaulting to the last 250 lines.
+    /// Supports both human-readable (bat-formatted) and JSON output formats
+    /// for agentic workflows and machine-readable consumption.
+    ///
+    /// Output formats:
+    ///   - text: Human-readable output with bat syntax highlighting (default)
+    ///   - json: Structured JSON with metadata for agentic consumption
+    ///
+    /// Common use cases:
+    ///   - Capturing pane state for agent coordination
+    ///   - Inspecting pane content without switching focus
+    ///   - Chaining with list commands: `nabi tmux list panes | jq '.[] | .send_prompt_target' | xargs -I {} nabi tmux capture {}`
+    ///
+    /// The command validates pane existence before capture and provides
+    /// clear error messages for invalid panes.
+    #[command(after_help = "EXAMPLES:
+  # Capture last 250 lines (default) with bat formatting
+  nabi tmux capture cross-pane:3.2
+
+  # Capture last 100 lines
+  nabi tmux capture mywindow:1 --lines 100
+
+  # JSON output for agentic workflows
+  nabi tmux capture session:2.1 --format json
+
+  # Chain with list command
+  nabi tmux list panes | jq -r '.[] | .send_prompt_target' | xargs -I {} nabi tmux capture {}
+
+PANE FORMAT:
+  session:window.pane  - Full specification (e.g., cross-pane:3.2)
+  session:window       - Implicit pane 1 (e.g., mywindow:1 = mywindow:1.1)
+
+  Where: window and pane numbers are 1-based (not 0-based)")]
+    Capture {
+        /// Tmux pane target (format: session:window.pane or session:window)
+        ///
+        /// Examples: cross-pane:3.2, schema-driven:1, mywindow:2.1
+        /// Windows and panes use 1-based numbering
+        #[arg(value_name = "PANE", value_hint = ValueHint::Other)]
+        pane: String,
+
+        /// Number of lines to capture (default: 250)
+        ///
+        /// Captures the last N lines from the pane's scrollback buffer.
+        /// Use negative numbers for relative positioning (future enhancement).
+        #[arg(short = 'l', long, default_value = "250")]
+        lines: u32,
+
+        /// Output format: text (default, bat-formatted) or json
+        ///
+        /// - text: Human-readable output with bat syntax highlighting
+        /// - json: Structured JSON with metadata for agentic consumption
+        #[arg(long, default_value = "text")]
+        format: String,
+
+        /// Disable bat formatting (fallback to plain text)
+        ///
+        /// When set, output will be plain text even if bat is available.
+        /// Useful for scripts that need raw content without formatting.
+        #[arg(long)]
+        no_bat: bool,
+    },
+
     /// Runtime introspection and discovery (sessions, windows, panes)
     ///
     /// Query the live tmux state to enable:
@@ -230,6 +295,12 @@ pub fn handle_tmux_commands(cmd: TmuxCommands) -> Result<()> {
             message,
             delay,
         } => handle_send_prompt(&pane, &message, delay),
+        TmuxCommands::Capture {
+            pane,
+            lines,
+            format,
+            no_bat,
+        } => handle_capture_pane(&pane, lines, &format, !no_bat),
         TmuxCommands::List(list_cmd) => handle_list_commands(list_cmd),
     }
 }
@@ -1259,6 +1330,109 @@ fn handle_send_prompt(pane: &str, message: &str, delay: u64) -> Result<()> {
     };
 
     println!("✓ Execution complete in pane: {} ({}: {})", pane, process_type, fg_process);
+    Ok(())
+}
+
+/// Capture pane content and format output
+///
+/// Handles both text (bat-formatted) and JSON output formats.
+/// Validates pane existence before capture.
+fn handle_capture_pane(pane: &str, lines: u32, format: &str, use_bat: bool) -> Result<()> {
+    // Validate pane format early
+    parse_pane_target(pane)
+        .with_context(|| format!("Invalid pane target '{}'", pane))?;
+
+    // Validate pane exists
+    let list_output = Command::new("tmux")
+        .args(&["list-panes", "-t", pane, "-F", "#{pane_index}"])
+        .output()
+        .with_context(|| format!("Failed to validate pane existence for '{}'", pane))?;
+
+    if !list_output.status.success() {
+        let stderr = String::from_utf8_lossy(&list_output.stderr);
+        anyhow::bail!("Pane '{}' does not exist: {}", pane, stderr.trim());
+    }
+
+    // Build capture command
+    let capture_args: Vec<String> = if lines > 0 {
+        vec![
+            "capture-pane".to_string(),
+            "-p".to_string(),
+            "-t".to_string(),
+            pane.to_string(),
+            "-S".to_string(),
+            format!("-{}", lines),
+        ]
+    } else {
+        vec![
+            "capture-pane".to_string(),
+            "-p".to_string(),
+            "-t".to_string(),
+            pane.to_string(),
+        ]
+    };
+
+    let capture_output = Command::new("tmux")
+        .args(&capture_args)
+        .output()
+        .with_context(|| format!("Failed to capture pane content from '{}'", pane))?;
+
+    if !capture_output.status.success() {
+        let stderr = String::from_utf8_lossy(&capture_output.stderr);
+        anyhow::bail!("Tmux capture-pane failed for '{}': {}", pane, stderr.trim());
+    }
+
+    let content = String::from_utf8_lossy(&capture_output.stdout).trim().to_string();
+
+    match format {
+        "json" => {
+            // JSON output format
+            let timestamp = chrono::Utc::now().to_rfc3339();
+            let json_output = serde_json::json!({
+                "pane": pane,
+                "lines": lines,
+                "timestamp": timestamp,
+                "content": content,
+                "metadata": {
+                    "captured_lines": content.lines().count(),
+                    "format": "text"
+                }
+            });
+            println!("{}", serde_json::to_string_pretty(&json_output)?);
+        }
+        "text" | _ => {
+            // Text output format (default)
+            if use_bat && !content.is_empty() {
+                // Try to use bat for syntax highlighting
+                let bat_result = Command::new("bat")
+                    .args(&["--language", "text", "--color", "always", "--plain", "--paging", "never"])
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::inherit())
+                    .stderr(std::process::Stdio::inherit())
+                    .spawn();
+
+                match bat_result {
+                    Ok(mut child) => {
+                        if let Some(mut stdin) = child.stdin.take() {
+                            use std::io::Write;
+                            if stdin.write_all(content.as_bytes()).is_ok() {
+                                drop(stdin); // Close stdin to signal EOF
+                                let _ = child.wait(); // Wait for bat to finish
+                                return Ok(());
+                            }
+                        }
+                        // If bat fails, fall through to plain text
+                        let _ = child.kill();
+                    }
+                    Err(_) => {} // bat not available, fall through
+                }
+            }
+
+            // Plain text output (fallback)
+            println!("{}", content);
+        }
+    }
+
     Ok(())
 }
 
