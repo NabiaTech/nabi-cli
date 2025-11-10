@@ -1,0 +1,240 @@
+{
+  "traceVersion": "1.1",
+  "manifest": {
+    "name": "continuity-dividend",
+    "schemaVersion": 2,
+    "seed": "NOV25-A",
+    "manifestHash": "sha256:8b7b2d7f3d7f1f9d5fbe2e7e7b78b1c7c2a9d1b4c2b7b0c9a1d3e6f5a2c9e0ab",
+    "theme": {
+      "palette": { "primary": "#101828", "accent": "#F97066", "neutral": "#EAECF0" },
+      "typography": {
+        "title": { "font": "Space Grotesk", "size": 42 },
+        "body":  { "font": "Inter", "size": 20, "lineHeight": 28 }
+      }
+    }
+  },
+  "source": {
+    "slxPath": "slides/continuity-dividend.slx",
+    "slidesCount": 10
+  },
+  "composer": {
+    "startedAt": "2025-11-09T19:12:10.321Z",
+    "endedAt":   "2025-11-09T19:12:10.497Z",
+    "durationMs": 176,
+    "transforms": ["normalizeHeaders", "enforceDensity"],
+    "seedStrategy": "scoped-per-slide"
+  },
+  "rng": {
+    "globalSeed": "NOV25-A",
+    "slideSeeds": {
+      "intro":   "NOV25-A:intro",
+      "premise": "NOV25-A:premise",
+      "formula": "NOV25-A:formula",
+      "scaling": "NOV25-A:scaling",
+      "strategic": "NOV25-A:strategic",
+      "economics": "NOV25-A:economics",
+      "moat":    "NOV25-A:moat",
+      "roi":     "NOV25-A:roi",
+      "founder": "NOV25-A:founder",
+      "close":   "NOV25-A:close"
+    }
+  },
+  "events": [
+    {
+      "slideId": "intro",
+      "index": 0,
+      "rules": [
+        {
+          "rule": "header.gate/trimTo8Words",
+          "input": "The Continuity Dividend",
+          "decision": { "kept": true, "trimmed": false, "finalHeader": "The Continuity Dividend" },
+          "seed": "NOV25-A:intro"
+        },
+        {
+          "rule": "density.assignLayout",
+          "input": { "type": "TITLE", "bodyChars": 162 },
+          "decision": { "layout": "TITLE_HERO", "variant": "hero-center" },
+          "seed": "NOV25-A:intro"
+        },
+        {
+          "rule": "theme.applyTokens",
+          "decision": {
+            "titleStyle": { "font": "Space Grotesk", "size": 42, "color": "#101828" },
+            "bodyStyle":  { "font": "Inter", "size": 20, "lineHeight": 28, "color": "#101828" },
+            "accent": "#F97066"
+          }
+        }
+      ]
+    },
+    {
+      "slideId": "premise",
+      "index": 1,
+      "rules": [
+        {
+          "rule": "header.gate/trimTo8Words",
+          "input": "Why Continuity Matters",
+          "decision": { "kept": true, "trimmed": false, "finalHeader": "Why Continuity Matters" },
+          "seed": "NOV25-A:premise"
+        },
+        {
+          "rule": "density.assignLayout",
+          "input": { "type": "SECTION", "bodyLines": 3 },
+          "decision": { "layout": "SECTION_INTRO", "variant": "left-rag" },
+          "seed": "NOV25-A:premise"
+        },
+        {
+          "rule": "relationships.linkCheck",
+          "decision": { "anchorsValidated": true, "missing": [] }
+        }
+      ]
+    },
+    {
+      "slideId": "formula",
+      "index": 2,
+      "rules": [
+        {
+          "rule": "header.gate/trimTo8Words",
+          "input": "Continuity Cost Model",
+          "decision": { "kept": true, "trimmed": false, "finalHeader": "Continuity Cost Model" },
+          "seed": "NOV25-A:formula"
+        },
+        {
+          "rule": "diagram.selectTemplate",
+          "input": { "callouts": 4, "hasEquation": true },
+          "decision": { "template": "EQUATION+CALLOUTS_4", "grid": "2x2", "gutterPx": 24 },
+          "seed": "NOV25-A:formula"
+        },
+        {
+          "rule": "density.enforceGutters",
+          "input": { "minGutterPx": 24 },
+          "decision": { "applied": true, "finalGutterPx": 24 }
+        },
+        {
+          "rule": "theme.applyTokens",
+          "decision": { "accent": "#F97066", "equationFont": "Space Grotesk" }
+        },
+        {
+          "rule": "relationships.linkCheck",
+          "decision": { "anchorsValidated": true, "missing": [] }
+        }
+      ]
+    },
+    {
+      "slideId": "scaling",
+      "index": 3,
+      "rules": [
+        {
+          "rule": "header.gate/trimTo8Words",
+          "input": "Scaling the Impact",
+          "decision": { "kept": true, "trimmed": false, "finalHeader": "Scaling the Impact" }
+        },
+        {
+          "rule": "density.assignLayout",
+          "input": { "type": "BULLETS_5x", "bullets": 5 },
+          "decision": { "layout": "BULLETS_5x", "variant": "balanced-5", "lineClamp": 1 }
+        },
+        {
+          "rule": "numbers.formatCurrencies",
+          "input": ["$195 K", "$19.5 M", "$9.75 B"],
+          "decision": { "normalized": ["$195K", "$19.5M", "$9.75B"] }
+        }
+      ]
+    },
+    {
+      "slideId": "strategic",
+      "index": 4,
+      "rules": [
+        { "rule": "header.gate/trimTo8Words", "decision": { "finalHeader": "Strategic Narrative" } },
+        { "rule": "density.assignLayout", "decision": { "layout": "SECTION_INTRO" } }
+      ]
+    },
+    {
+      "slideId": "economics",
+      "index": 5,
+      "rules": [
+        { "rule": "header.gate/trimTo8Words", "decision": { "finalHeader": "Ergonomics = Economics" } },
+        { "rule": "density.assignLayout", "decision": { "layout": "BULLETS_5x", "variant": "tight-5" } },
+        { "rule": "tokens.accentBullets", "decision": { "bulletColor": "#F97066" } }
+      ]
+    },
+    {
+      "slideId": "moat",
+      "index": 6,
+      "rules": [
+        { "rule": "header.gate/trimTo8Words", "decision": { "finalHeader": "Competitive Moat" } },
+        { "rule": "table.chooseTemplate", "decision": { "template": "TABLE_4C", "minColWidth": 160 } },
+        { "rule": "table.enforceGutters", "decision": { "colGutterPx": 24, "rowGutterPx": 8 } }
+      ]
+    },
+    {
+      "slideId": "roi",
+      "index": 7,
+      "rules": [
+        { "rule": "header.gate/trimTo8Words", "decision": { "finalHeader": "Continuity Dividend Curve" } },
+        { "rule": "graph.selectChart", "decision": { "type": "LINE_MONO", "yUnit": "ROI" } },
+        { "rule": "graph.axisFormat", "decision": { "xLabel": "Friction ↓", "yLabel": "ROI ↑" } }
+      ]
+    },
+    {
+      "slideId": "founder",
+      "index": 8,
+      "rules": [
+        { "rule": "header.gate/trimTo8Words", "decision": { "finalHeader": "Founder Framing" } },
+        { "rule": "quote.layout", "decision": { "template": "PULL_QUOTE_ACCENT_BAR" } }
+      ]
+    },
+    {
+      "slideId": "close",
+      "index": 9,
+      "rules": [
+        { "rule": "header.gate/trimTo8Words", "decision": { "finalHeader": "The Continuity Dividend" } },
+        { "rule": "density.assignLayout", "decision": { "layout": "TITLE_OUTRO", "variant": "hero-center" } }
+      ]
+    }
+  ],
+  "ordering": {
+    "strategy": "variant-scoring",
+    "candidates": [
+      { "id": "A", "seed": "NOV25-A", "score": 0.87, "order": ["intro","premise","formula","scaling","strategic","economics","moat","roi","founder","close"] },
+      { "id": "B", "seed": "NOV25-A+B", "score": 0.83, "order": ["intro","premise","formula","strategic","economics","scaling","moat","roi","founder","close"] }
+    ],
+    "selected": "A",
+    "reasons": ["clarity>density", "diagram before bullets", "quote near close"]
+  },
+  "renderer": {
+    "target": "pptx",
+    "emitted": [
+      "out/continuity-dividend.pptx",
+      "out/continuity-dividend.trace.json",
+      "out/continuity-dividend.contracts.json"
+    ]
+  },
+  "contracts": {
+    "ran": ["hierarchy", "relationships"],
+    "results": {
+      "hierarchy": {
+        "status": "pass",
+        "assertions": 7,
+        "samples": [
+          {
+            "slideId": "intro",
+            "assertion": "header.above.body",
+            "bbox": { "headerY": 96, "bodyY": 212 },
+            "ok": true
+          }
+        ]
+      },
+      "relationships": {
+        "status": "pass",
+        "assertions": 4,
+        "samples": [
+          {
+            "slideId": "formula",
+            "assertion": "callouts.anchor.exists",
+            "ok": true
+          }
+        ]
+      }
+    }
+  }
+}
