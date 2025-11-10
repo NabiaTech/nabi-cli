@@ -16,6 +16,7 @@ nabi self config
 nabi claude session list
 nabi data jsonl validate file.jsonl
 nabi federation agent list
+nabi tmux mem --format table
 ```
 
 ## Architecture Summary
@@ -238,4 +239,3 @@ cp ~/.cache/nabi/nabi-cli/target/release/nabi ~/.local/bin/nabi
 - XDG paths are resolved at build time via Makefile
 - macOS: Uses `~/Library/Application Support` conventions wrapped as XDG
 - Linux/WSL: Uses standard XDG paths (`~/.cache`, `~/.local/share`)
-

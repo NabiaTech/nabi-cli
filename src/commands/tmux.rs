@@ -14,19 +14,23 @@
 /// - Text and Enter are guaranteed to be sent in sequence without interruption
 /// - All steps complete or fail together (no partial state)
 /// - Recovery steps ensure clean state before sending commands
-
 use anyhow::{Context, Result};
 use chrono;
-use clap::{Subcommand, ValueHint};
+use clap::{Subcommand, ValueEnum, ValueHint};
 use serde::{Deserialize, Serialize};
 use serde_json;
+use std::collections::{HashMap, HashSet};
+use std::fs;
 use std::process::Command;
+use std::str::FromStr;
 use std::thread;
 use std::time::Duration;
 
+use crate::paths::NabiPaths;
+
 // Timing constants for tmux operations (in milliseconds)
-const DELAY_TUI_RECOVERY: u64 = 40;  // Wait after C-c to exit TUI apps
-const DELAY_PROMPT_CLEAR: u64 = 20;  // Wait after C-c to clear PS2 prompts
+const DELAY_TUI_RECOVERY: u64 = 40; // Wait after C-c to exit TUI apps
+const DELAY_PROMPT_CLEAR: u64 = 20; // Wait after C-c to clear PS2 prompts
 const DELAY_TEXT_TO_ENTER: u64 = 15; // Debounce between text and carriage return
 
 // Supported shell processes (for foreground process detection)
@@ -38,14 +42,18 @@ const TUI_DIRECT_SEND: &[&str] = &["claude", "Claude"];
 
 // TUI applications that require Ctrl+C recovery (vim, less, python REPL, etc.)
 // These block the shell and need to be exited before sending commands
-const TUI_RECOVERY_NEEDED: &[&str] = &["vim", "vi", "nano", "less", "more", "top", "htop", "python", "python3", "ipython", "node", "nodejs", "irb", "pry"];
+const TUI_RECOVERY_NEEDED: &[&str] = &[
+    "vim", "vi", "nano", "less", "more", "top", "htop", "python", "python3", "ipython", "node",
+    "nodejs", "irb", "pry",
+];
 
 // Note: Pane format validation is done via parsing, not regex
 // These constants are kept for potential future use or documentation
 
 #[derive(Subcommand)]
-#[command(about = "Tmux pane coordination (send-prompt, introspection) for multi-agent orchestration", long_about =
-"Provides reliable cross-pane IPC operations with guaranteed atomic execution.
+#[command(
+    about = "Tmux pane coordination (send-prompt, introspection) for multi-agent orchestration",
+    long_about = "Provides reliable cross-pane IPC operations with guaranteed atomic execution.
 
 This command enables safe coordination across tmux windows by ensuring that text
 and Enter keypresses are delivered together in a reliable sequence, preventing
@@ -62,7 +70,8 @@ Perfect for:
   - Federation command injection with guaranteed delivery
 
 All operations are reliable: if tmux accepts the command sequence, both text and Enter
-are guaranteed to be delivered together without interruption.")]
+are guaranteed to be delivered together without interruption."
+)]
 pub enum TmuxCommands {
     /// Send message + Execute reliably (text + Enter in coordinated sequence)
     ///
@@ -202,6 +211,30 @@ PANE FORMAT:
         bat: bool,
     },
 
+    /// Summarize tmux pane memory usage with Claude-aware detection
+    ///
+    /// Provides the same view as the original pane-mem.sh prototype but with
+    /// faster sampling, config-driven thresholds, and optional JSON output.
+    /// Useful for spotting lingering Claude Code panes that keep RSS allocations
+    /// even after panes are closed.
+    Mem {
+        /// Output format (table or json). Defaults to config value (table).
+        #[arg(long, value_enum)]
+        format: Option<PaneMemOutputFormat>,
+
+        /// Limit number of rows (defaults to config, typically 200)
+        #[arg(long)]
+        limit: Option<usize>,
+
+        /// Only show panes detected as Claude sessions
+        #[arg(long, default_value_t = false)]
+        claude_only: bool,
+
+        /// Override alert threshold in megabytes (default: 1024 MB)
+        #[arg(long)]
+        threshold_mb: Option<f64>,
+    },
+
     /// Runtime introspection and discovery (sessions, windows, panes)
     ///
     /// Query the live tmux state to enable:
@@ -300,6 +333,291 @@ pub enum ListCommands {
     },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
+pub enum PaneMemOutputFormat {
+    #[value(alias = "table")]
+    Table,
+    #[value(alias = "json")]
+    Json,
+}
+
+impl Default for PaneMemOutputFormat {
+    fn default() -> Self {
+        PaneMemOutputFormat::Table
+    }
+}
+
+impl FromStr for PaneMemOutputFormat {
+    type Err = String;
+
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        match input.to_ascii_lowercase().as_str() {
+            "table" => Ok(PaneMemOutputFormat::Table),
+            "json" => Ok(PaneMemOutputFormat::Json),
+            other => Err(format!("unsupported format '{}'", other)),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct PaneMemConfig {
+    #[serde(default)]
+    defaults: PaneMemDefaults,
+    #[serde(default)]
+    detection: PaneMemDetection,
+    #[serde(default)]
+    output: PaneMemOutput,
+}
+
+impl Default for PaneMemConfig {
+    fn default() -> Self {
+        PaneMemConfig {
+            defaults: PaneMemDefaults::default(),
+            detection: PaneMemDetection::default(),
+            output: PaneMemOutput::default(),
+        }
+    }
+}
+
+impl PaneMemConfig {
+    fn load() -> Self {
+        let path = NabiPaths::config_dir()
+            .map(|dir| dir.join("tmux-mem").join("config.toml"))
+            .ok();
+
+        if let Some(cfg_path) = path {
+            if cfg_path.exists() {
+                match fs::read_to_string(&cfg_path) {
+                    Ok(contents) => match toml::from_str::<PaneMemConfig>(&contents) {
+                        Ok(mut cfg) => {
+                            cfg.detection.normalize_patterns();
+                            return cfg;
+                        }
+                        Err(err) => {
+                            eprintln!(
+                                "⚠️  Failed to parse {}: {} (falling back to defaults)",
+                                cfg_path.display(),
+                                err
+                            );
+                        }
+                    },
+                    Err(err) => {
+                        eprintln!(
+                            "⚠️  Unable to read {}: {} (falling back to defaults)",
+                            cfg_path.display(),
+                            err
+                        );
+                    }
+                }
+            }
+        }
+
+        PaneMemConfig::default()
+    }
+
+    fn resolved_format(&self, cli_format: Option<PaneMemOutputFormat>) -> PaneMemOutputFormat {
+        cli_format
+            .or(self.output.default_format)
+            .unwrap_or(PaneMemOutputFormat::Table)
+    }
+
+    fn show_header(&self) -> bool {
+        self.output.show_header
+    }
+
+    fn show_legend(&self) -> bool {
+        self.output.show_legend
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct PaneMemDefaults {
+    #[serde(default = "default_highlight_mb")]
+    highlight_mb: f64,
+    #[serde(default = "default_limit")]
+    limit: usize,
+    #[serde(default = "default_header_title")]
+    header_title: String,
+    #[serde(default = "default_claude_label")]
+    claude_label: String,
+    #[serde(default = "default_shell_label")]
+    shell_label: String,
+    #[serde(default = "default_alert_label")]
+    alert_label: String,
+}
+
+impl Default for PaneMemDefaults {
+    fn default() -> Self {
+        PaneMemDefaults {
+            highlight_mb: default_highlight_mb(),
+            limit: default_limit(),
+            header_title: default_header_title(),
+            claude_label: default_claude_label(),
+            shell_label: default_shell_label(),
+            alert_label: default_alert_label(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct PaneMemDetection {
+    #[serde(default = "default_title_patterns")]
+    title_patterns: Vec<String>,
+    #[serde(default = "default_process_patterns")]
+    process_patterns: Vec<String>,
+    #[serde(default)]
+    claude_version_command: Option<String>,
+    #[serde(default = "default_version_args")]
+    claude_version_args: Vec<String>,
+}
+
+impl Default for PaneMemDetection {
+    fn default() -> Self {
+        PaneMemDetection {
+            title_patterns: default_title_patterns(),
+            process_patterns: default_process_patterns(),
+            claude_version_command: None,
+            claude_version_args: default_version_args(),
+        }
+    }
+}
+
+impl PaneMemDetection {
+    fn normalize_patterns(&mut self) {
+        self.title_patterns = self
+            .title_patterns
+            .iter()
+            .map(|s| s.to_ascii_lowercase())
+            .collect();
+        self.process_patterns = self
+            .process_patterns
+            .iter()
+            .map(|s| s.to_ascii_lowercase())
+            .collect();
+    }
+
+    fn matches_title(&self, title: &str) -> bool {
+        let lower = title.to_ascii_lowercase();
+        self.title_patterns
+            .iter()
+            .any(|pattern| !pattern.is_empty() && lower.contains(pattern))
+    }
+
+    fn matches_process(&self, proc_info: &ProcessInfo) -> bool {
+        if self.process_patterns.is_empty() {
+            return false;
+        }
+
+        let command = proc_info.command.to_ascii_lowercase();
+        let args = proc_info.args.to_ascii_lowercase();
+
+        self.process_patterns.iter().any(|pattern| {
+            if pattern.is_empty() {
+                return false;
+            }
+            command.contains(pattern) || args.contains(pattern)
+        })
+    }
+
+    fn version_command(&self) -> String {
+        self.claude_version_command
+            .clone()
+            .unwrap_or_else(|| "claude".to_string())
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct PaneMemOutput {
+    #[serde(default)]
+    default_format: Option<PaneMemOutputFormat>,
+    #[serde(default = "default_true")]
+    show_header: bool,
+    #[serde(default = "default_true")]
+    show_legend: bool,
+}
+
+impl Default for PaneMemOutput {
+    fn default() -> Self {
+        PaneMemOutput {
+            default_format: None,
+            show_header: true,
+            show_legend: true,
+        }
+    }
+}
+
+fn default_highlight_mb() -> f64 {
+    1024.0
+}
+
+fn default_limit() -> usize {
+    200
+}
+
+fn default_header_title() -> String {
+    "CLAUDE CODE SESSION MEMORY USAGE".to_string()
+}
+
+fn default_claude_label() -> String {
+    "🔵 Claude".to_string()
+}
+
+fn default_shell_label() -> String {
+    "shell".to_string()
+}
+
+fn default_alert_label() -> String {
+    "⚠️  OVER 1GB".to_string()
+}
+
+fn default_title_patterns() -> Vec<String> {
+    vec!["claude".to_string(), "code".to_string()]
+}
+
+fn default_process_patterns() -> Vec<String> {
+    vec!["claude".to_string(), "code".to_string(), "node".to_string()]
+}
+
+fn default_version_args() -> Vec<String> {
+    vec!["--version".to_string()]
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PaneMemoryRecord {
+    pane: String,
+    pane_title: String,
+    pane_pid: i32,
+    process_name: String,
+    session_type: String,
+    memory_kb: u64,
+    memory_mb: f64,
+    memory_gb: f64,
+    percent_of_system: f64,
+    child_processes: usize,
+    claude_version: Option<String>,
+    alert: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct TmuxPaneRow {
+    pane: String,
+    pid: i32,
+    title: String,
+}
+
+#[derive(Debug, Clone)]
+struct ProcessInfo {
+    pid: i32,
+    ppid: i32,
+    rss_kb: u64,
+    command: String,
+    args: String,
+}
+
 pub fn handle_tmux_commands(cmd: TmuxCommands) -> Result<()> {
     match cmd {
         TmuxCommands::SendPrompt {
@@ -313,6 +631,12 @@ pub fn handle_tmux_commands(cmd: TmuxCommands) -> Result<()> {
             format,
             bat,
         } => handle_capture_pane(pane.as_deref(), lines, &format, bat),
+        TmuxCommands::Mem {
+            format,
+            limit,
+            claude_only,
+            threshold_mb,
+        } => handle_tmux_pane_memory(format, limit, claude_only, threshold_mb),
         TmuxCommands::List(list_cmd) => handle_list_commands(list_cmd),
     }
 }
@@ -320,11 +644,20 @@ pub fn handle_tmux_commands(cmd: TmuxCommands) -> Result<()> {
 fn handle_list_commands(cmd: ListCommands) -> Result<()> {
     match cmd {
         ListCommands::Sessions { format, filter } => list_tmux_sessions(&format, filter.as_deref()),
-        ListCommands::Windows { session, format, no_strict } => {
-            let session_name = session.unwrap_or_else(|| get_current_tmux_session().unwrap_or_default());
+        ListCommands::Windows {
+            session,
+            format,
+            no_strict,
+        } => {
+            let session_name =
+                session.unwrap_or_else(|| get_current_tmux_session().unwrap_or_default());
             list_tmux_windows(&session_name, &format, no_strict)
         }
-        ListCommands::Panes { target, format, no_strict } => {
+        ListCommands::Panes {
+            target,
+            format,
+            no_strict,
+        } => {
             // Parse target: "session:window" or just "window"
             let (session_name, window) = if let Some(colon_pos) = target.find(':') {
                 let session = target[..colon_pos].to_string();
@@ -338,6 +671,364 @@ fn handle_list_commands(cmd: ListCommands) -> Result<()> {
             };
             list_tmux_panes(&session_name, &window, &format, no_strict)
         }
+    }
+}
+
+fn handle_tmux_pane_memory(
+    format: Option<PaneMemOutputFormat>,
+    limit: Option<usize>,
+    claude_only: bool,
+    threshold_override: Option<f64>,
+) -> Result<()> {
+    let config = PaneMemConfig::load();
+    let resolved_format = config.resolved_format(format);
+    let row_limit = limit.unwrap_or(config.defaults.limit);
+    let highlight_mb = threshold_override.unwrap_or(config.defaults.highlight_mb);
+    let total_system_mem_kb = fetch_total_system_memory_kb();
+
+    let panes = collect_tmux_panes().context("Failed to enumerate tmux panes")?;
+    if panes.is_empty() {
+        println!("No tmux panes detected.");
+        return Ok(());
+    }
+
+    let processes = collect_process_table().context("Failed to enumerate processes via ps")?;
+    let child_map = build_child_map(&processes);
+
+    let mut records: Vec<PaneMemoryRecord> = Vec::new();
+    let mut claude_version_cache: Option<Option<String>> = None;
+
+    for pane in panes {
+        let Some(parent_info) = processes.get(&pane.pid) else {
+            continue;
+        };
+
+        let process_tree = gather_process_tree(pane.pid, &child_map);
+        if process_tree.is_empty() {
+            continue;
+        }
+
+        let total_kb: u64 = process_tree
+            .iter()
+            .filter_map(|pid| processes.get(pid))
+            .map(|info| info.rss_kb)
+            .sum();
+
+        if total_kb == 0 {
+            continue;
+        }
+
+        let mut is_claude = config.detection.matches_title(&pane.title);
+        if !is_claude {
+            is_claude = process_tree.iter().any(|pid| {
+                processes
+                    .get(pid)
+                    .map(|info| config.detection.matches_process(info))
+                    .unwrap_or(false)
+            });
+        }
+
+        if claude_only && !is_claude {
+            continue;
+        }
+
+        let claude_version = if is_claude {
+            if claude_version_cache.is_none() {
+                claude_version_cache = Some(query_claude_version(&config.detection));
+            }
+            claude_version_cache.clone().unwrap_or(None)
+        } else {
+            None
+        };
+
+        let total_mb = total_kb as f64 / 1024.0;
+        let total_gb = total_kb as f64 / (1024.0 * 1024.0);
+        let percent = if total_system_mem_kb > 0 {
+            (total_kb as f64 / total_system_mem_kb as f64) * 100.0
+        } else {
+            0.0
+        };
+
+        let alert = if total_mb > highlight_mb {
+            Some(config.defaults.alert_label.clone())
+        } else {
+            None
+        };
+
+        let session_type = if is_claude {
+            config.defaults.claude_label.clone()
+        } else {
+            config.defaults.shell_label.clone()
+        };
+
+        let child_count = process_tree.len().saturating_sub(1);
+
+        records.push(PaneMemoryRecord {
+            pane: pane.pane.clone(),
+            pane_title: pane.title.clone(),
+            pane_pid: pane.pid,
+            process_name: parent_info.command.clone(),
+            session_type,
+            memory_kb: total_kb,
+            memory_mb: total_mb,
+            memory_gb: total_gb,
+            percent_of_system: percent,
+            child_processes: child_count,
+            claude_version,
+            alert,
+        });
+    }
+
+    if records.is_empty() {
+        println!("No live tmux pane processes found.");
+        return Ok(());
+    }
+
+    records.sort_by(|a, b| b.memory_kb.cmp(&a.memory_kb));
+    if records.len() > row_limit {
+        records.truncate(row_limit);
+    }
+
+    match resolved_format {
+        PaneMemOutputFormat::Table => print_pane_memory_table(&records, &config),
+        PaneMemOutputFormat::Json => print_pane_memory_json(&records)?,
+    }
+
+    Ok(())
+}
+
+fn collect_tmux_panes() -> Result<Vec<TmuxPaneRow>> {
+    let format = "#{session_name}:#{window_index}.#{pane_index}\t#{pane_pid}\t#{pane_title}";
+    let output = Command::new("tmux")
+        .args(&["list-panes", "-a", "-F", format])
+        .output()
+        .context("tmux list-panes failed")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow::anyhow!(
+            "tmux list-panes failed: {}",
+            stderr.trim().to_string()
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut panes = Vec::new();
+    for line in stdout.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let mut parts = line.splitn(3, '\t');
+        let pane_id = parts.next().unwrap_or("").trim();
+        let pid_str = parts.next().unwrap_or("").trim();
+        let title = parts.next().unwrap_or("").trim();
+        if pane_id.is_empty() || pid_str.is_empty() {
+            continue;
+        }
+        if let Ok(pid) = pid_str.parse::<i32>() {
+            panes.push(TmuxPaneRow {
+                pane: pane_id.to_string(),
+                pid,
+                title: title.to_string(),
+            });
+        }
+    }
+
+    Ok(panes)
+}
+
+fn collect_process_table() -> Result<HashMap<i32, ProcessInfo>> {
+    let output = Command::new("ps")
+        .args(&["-axo", "pid=,ppid=,rss=,comm=,args="])
+        .output()
+        .context("ps command failed")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow::anyhow!(
+            "ps command failed: {}",
+            stderr.trim().to_string()
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut table = HashMap::new();
+
+    for line in stdout.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        let mut parts = line.split_whitespace();
+        let Some(pid_str) = parts.next() else {
+            continue;
+        };
+        let Some(ppid_str) = parts.next() else {
+            continue;
+        };
+        let Some(rss_str) = parts.next() else {
+            continue;
+        };
+        let command_str = parts.next().unwrap_or("");
+        let args_rest = parts.collect::<Vec<&str>>().join(" ");
+
+        let pid = match pid_str.parse::<i32>() {
+            Ok(val) => val,
+            Err(_) => continue,
+        };
+        let ppid = match ppid_str.parse::<i32>() {
+            Ok(val) => val,
+            Err(_) => continue,
+        };
+        let rss_kb = rss_str.parse::<u64>().unwrap_or(0);
+
+        table.insert(
+            pid,
+            ProcessInfo {
+                pid,
+                ppid,
+                rss_kb,
+                command: command_str.to_string(),
+                args: args_rest,
+            },
+        );
+    }
+
+    Ok(table)
+}
+
+fn build_child_map(processes: &HashMap<i32, ProcessInfo>) -> HashMap<i32, Vec<i32>> {
+    let mut map: HashMap<i32, Vec<i32>> = HashMap::new();
+    for info in processes.values() {
+        map.entry(info.ppid).or_default().push(info.pid);
+    }
+    map
+}
+
+fn gather_process_tree(root: i32, child_map: &HashMap<i32, Vec<i32>>) -> Vec<i32> {
+    let mut visited = HashSet::new();
+    let mut stack = vec![root];
+    let mut collected = Vec::new();
+
+    while let Some(pid) = stack.pop() {
+        if !visited.insert(pid) {
+            continue;
+        }
+        collected.push(pid);
+        if let Some(children) = child_map.get(&pid) {
+            for child in children {
+                stack.push(*child);
+            }
+        }
+    }
+
+    collected
+}
+
+fn print_pane_memory_table(records: &[PaneMemoryRecord], config: &PaneMemConfig) {
+    if config.show_header() {
+        println!("═══════════════════════════════════════════════════════════════════════════════");
+        println!("{}", config.defaults.header_title);
+        println!("═══════════════════════════════════════════════════════════════════════════════");
+        println!();
+    }
+
+    println!(
+        "{:<20} {:<15} {:<12} {:<8} {:<10} {:<12}",
+        "PANE", "SESSION TYPE", "MEMORY", "GB", "CHILDREN", "VERSION"
+    );
+    println!(
+        "────────────────────────────────────────────────────────────────────────────────────────"
+    );
+
+    for record in records {
+        let mb_display = format!("{:.1} MB", record.memory_mb);
+        let gb_display = format!("{:.2} GB", record.memory_gb);
+        let version_display = record.claude_version.as_deref().unwrap_or_else(|| {
+            if record.session_type == config.defaults.claude_label {
+                "(active)"
+            } else {
+                "-"
+            }
+        });
+
+        println!(
+            "{:<20} {:<15} {:<12} {:<8} {:<10} {:<12}",
+            record.pane,
+            record.session_type,
+            mb_display,
+            gb_display,
+            record.child_processes,
+            version_display
+        );
+
+        if let Some(alert) = &record.alert {
+            println!("  └─ {}", alert);
+        }
+    }
+
+    if config.show_legend() {
+        println!();
+        println!("═══════════════════════════════════════════════════════════════════════════════");
+        println!("Legend: Children = child process count | Claude = version if detected");
+        println!("═══════════════════════════════════════════════════════════════════════════════");
+    }
+}
+
+fn print_pane_memory_json(records: &[PaneMemoryRecord]) -> Result<()> {
+    let json = serde_json::to_string_pretty(records)
+        .context("Failed to serialize pane memory records to JSON")?;
+    println!("{}", json);
+    Ok(())
+}
+
+fn fetch_total_system_memory_kb() -> u64 {
+    if let Ok(output) = Command::new("sysctl").args(&["-n", "hw.memsize"]).output() {
+        if output.status.success() {
+            if let Ok(value) = String::from_utf8_lossy(&output.stdout)
+                .trim()
+                .parse::<u64>()
+            {
+                return value / 1024;
+            }
+        }
+    }
+
+    if let Ok(meminfo) = fs::read_to_string("/proc/meminfo") {
+        for line in meminfo.lines() {
+            if let Some(rest) = line.strip_prefix("MemTotal:") {
+                let parts: Vec<&str> = rest.trim().split_whitespace().collect();
+                if let Some(value_str) = parts.first() {
+                    if let Ok(value) = value_str.parse::<u64>() {
+                        return value;
+                    }
+                }
+            }
+        }
+    }
+
+    8 * 1024 * 1024
+}
+
+fn query_claude_version(detection: &PaneMemDetection) -> Option<String> {
+    let command = detection.version_command();
+    let mut cmd = Command::new(&command);
+    if !detection.claude_version_args.is_empty() {
+        cmd.args(&detection.claude_version_args);
+    }
+
+    match cmd.output() {
+        Ok(output) if output.status.success() => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let version_line = stdout.lines().next().unwrap_or("active").trim();
+            if version_line.is_empty() {
+                Some("active".to_string())
+            } else {
+                Some(version_line.to_string())
+            }
+        }
+        Ok(_) => Some("active".to_string()),
+        Err(_) => Some("active".to_string()),
     }
 }
 
@@ -371,10 +1062,10 @@ pub struct TmuxContextInfo {
     pub pane_index: Option<u32>,
     pub window_active: Option<bool>,
     pub pane_active: Option<bool>,
-    pub pane_id: Option<String>,     // e.g. "%0"
-    pub window_id: Option<String>,   // e.g. "@0"
-    pub window_index_base: u32,      // from tmux config (0 or 1)
-    pub pane_index_base: u32,        // from tmux config (0 or 1)
+    pub pane_id: Option<String>,   // e.g. "%0"
+    pub window_id: Option<String>, // e.g. "@0"
+    pub window_index_base: u32,    // from tmux config (0 or 1)
+    pub pane_index_base: u32,      // from tmux config (0 or 1)
 }
 
 impl Default for TmuxContextInfo {
@@ -413,7 +1104,8 @@ fn get_tmux_index_bases() -> Result<(u32, u32)> {
         if output_str.is_empty() {
             0 // Default to 0 if empty
         } else {
-            output_str.parse::<u32>()
+            output_str
+                .parse::<u32>()
                 .context("Failed to parse base-index as u32")?
         }
     } else {
@@ -433,7 +1125,8 @@ fn get_tmux_index_bases() -> Result<(u32, u32)> {
         if output_str.is_empty() {
             0 // Default to 0 if empty
         } else {
-            output_str.parse::<u32>()
+            output_str
+                .parse::<u32>()
                 .context("Failed to parse pane-base-index as u32")?
         }
     } else {
@@ -588,7 +1281,6 @@ fn validate_session_match(
     }
 }
 
-
 #[derive(Debug, Serialize, Deserialize)]
 struct SessionInfo {
     name: String,
@@ -606,13 +1298,7 @@ fn check_session_has_claude_tui(session_name: &str) -> bool {
     // Query all panes in all windows of the session for their foreground processes
     // We need to check each window separately since list-panes only works per-window
     let windows_output = Command::new("tmux")
-        .args(&[
-            "list-windows",
-            "-t",
-            session_name,
-            "-F",
-            "#{window_index}",
-        ])
+        .args(&["list-windows", "-t", session_name, "-F", "#{window_index}"])
         .output();
 
     if let Ok(windows_result) = windows_output {
@@ -750,12 +1436,20 @@ fn list_tmux_sessions(format: &str, filter: Option<&str>) -> Result<()> {
         "full" => {
             // Human-readable format with metadata
             for session in &sessions {
-                let attached_str = if session.attached { "attached" } else { "detached" };
-                let claude_str = session.is_claude_tui
+                let attached_str = if session.attached {
+                    "attached"
+                } else {
+                    "detached"
+                };
+                let claude_str = session
+                    .is_claude_tui
                     .filter(|&is_claude| is_claude)
                     .map(|_| ", Claude TUI")
                     .unwrap_or_default();
-                println!("{} ({} windows, {}{})", session.name, session.windows, attached_str, claude_str);
+                println!(
+                    "{} ({} windows, {}{})",
+                    session.name, session.windows, attached_str, claude_str
+                );
             }
         }
         "name" | _ => {
@@ -787,14 +1481,22 @@ fn list_tmux_windows(session: &str, format: &str, no_strict: bool) -> Result<()>
     let mismatch = match validate_session_match(Some(session), &context, strict) {
         Ok(m) => m,
         Err(exit_code) => {
-            eprintln!("Error: Session mismatch. Expected '{}', currently in '{:?}'",
-                session, context.session_name);
+            eprintln!(
+                "Error: Session mismatch. Expected '{}', currently in '{:?}'",
+                session, context.session_name
+            );
             std::process::exit(exit_code);
         }
     };
 
     let output = Command::new("tmux")
-        .args(&["list-windows", "-t", session, "-F", "#{window_index}|#{window_name}|#{window_panes}|#{window_active}"])
+        .args(&[
+            "list-windows",
+            "-t",
+            session,
+            "-F",
+            "#{window_index}|#{window_name}|#{window_panes}|#{window_active}",
+        ])
         .output()
         .context(format!("Failed to query windows for session '{}'", session))?;
 
@@ -917,8 +1619,10 @@ fn list_tmux_panes(session: &str, window: &str, format: &str, no_strict: bool) -
     let mismatch = match validate_session_match(Some(session), &context, strict) {
         Ok(m) => m,
         Err(exit_code) => {
-            eprintln!("Error: Session mismatch. Expected '{}', currently in '{:?}'",
-                session, context.session_name);
+            eprintln!(
+                "Error: Session mismatch. Expected '{}', currently in '{:?}'",
+                session, context.session_name
+            );
             std::process::exit(exit_code);
         }
     };
@@ -926,8 +1630,13 @@ fn list_tmux_panes(session: &str, window: &str, format: &str, no_strict: bool) -
     let target = format!("{}:{}", session, window);
 
     let output = Command::new("tmux")
-        .args(&["list-panes", "-t", &target, "-F",
-               "#{pane_index}|#{pane_active}|#{pane_id}|#{window_id}|#{window_panes}"])
+        .args(&[
+            "list-panes",
+            "-t",
+            &target,
+            "-F",
+            "#{pane_index}|#{pane_active}|#{pane_id}|#{window_id}|#{window_panes}",
+        ])
         .output()
         .context(format!("Failed to query panes for {}:{}", session, window))?;
 
@@ -1051,10 +1760,16 @@ fn parse_pane_target(pane: &str) -> Result<(String, String, String)> {
 
             // Validate numeric parts
             if window.parse::<usize>().is_err() {
-                anyhow::bail!("Invalid window number in pane target '{}': expected numeric", pane);
+                anyhow::bail!(
+                    "Invalid window number in pane target '{}': expected numeric",
+                    pane
+                );
             }
             if pane_num.parse::<usize>().is_err() {
-                anyhow::bail!("Invalid pane number in pane target '{}': expected numeric", pane);
+                anyhow::bail!(
+                    "Invalid pane number in pane target '{}': expected numeric",
+                    pane
+                );
             }
 
             return Ok((session, window, pane_num));
@@ -1067,7 +1782,10 @@ fn parse_pane_target(pane: &str) -> Result<(String, String, String)> {
         let window = pane[colon_pos + 1..].to_string();
 
         if window.parse::<usize>().is_err() {
-            anyhow::bail!("Invalid window number in pane target '{}': expected numeric", pane);
+            anyhow::bail!(
+                "Invalid window number in pane target '{}': expected numeric",
+                pane
+            );
         }
 
         return Ok((session, window, "1".to_string()));
@@ -1156,7 +1874,13 @@ fn resolve_window_name(session: &str, name_spec: &str) -> Result<u32, String> {
 
     // Step 2: Query tmux for all windows in the session
     let output = std::process::Command::new("tmux")
-        .args(&["list-windows", "-t", session, "-F", "#{window_index}|#{window_name}"])
+        .args(&[
+            "list-windows",
+            "-t",
+            session,
+            "-F",
+            "#{window_index}|#{window_name}",
+        ])
         .output()
         .map_err(|e| format!("Failed to query windows for session '{}': {}", session, e))?;
 
@@ -1212,7 +1936,6 @@ fn resolve_window_name(session: &str, name_spec: &str) -> Result<u32, String> {
     }
 }
 
-
 /// Send message + Enter as reliable operation to target pane
 ///
 /// Implements robust pane state handling:
@@ -1231,8 +1954,7 @@ fn resolve_window_name(session: &str, name_spec: &str) -> Result<u32, String> {
 /// - Enter key timing issues → fixed by using C-m (carriage return)
 fn handle_send_prompt(pane: &str, message: &str, delay: u64) -> Result<()> {
     // Validate pane format early
-    parse_pane_target(pane)
-        .with_context(|| format!("Invalid pane target '{}'", pane))?;
+    parse_pane_target(pane).with_context(|| format!("Invalid pane target '{}'", pane))?;
 
     if message.is_empty() {
         anyhow::bail!("Message cannot be empty");
@@ -1240,23 +1962,24 @@ fn handle_send_prompt(pane: &str, message: &str, delay: u64) -> Result<()> {
 
     // Step 1: Detect foreground process type
     let fg_output = Command::new("tmux")
-        .args(&["display-message", "-p", "-t", pane, "#{pane_current_command}"])
+        .args(&[
+            "display-message",
+            "-p",
+            "-t",
+            pane,
+            "#{pane_current_command}",
+        ])
         .output()
-        .with_context(|| format!(
-            "Failed to check foreground process for pane '{}'",
-            pane
-        ))?;
+        .with_context(|| format!("Failed to check foreground process for pane '{}'", pane))?;
 
     if !fg_output.status.success() {
         let stderr = String::from_utf8_lossy(&fg_output.stderr);
-        anyhow::bail!(
-            "Failed to query pane '{}': {}",
-            pane,
-            stderr.trim()
-        );
+        anyhow::bail!("Failed to query pane '{}': {}", pane, stderr.trim());
     }
 
-    let fg_process = String::from_utf8_lossy(&fg_output.stdout).trim().to_string();
+    let fg_process = String::from_utf8_lossy(&fg_output.stdout)
+        .trim()
+        .to_string();
     let is_shell = SUPPORTED_SHELLS.contains(&fg_process.as_str());
     let is_claude = is_claude_tui(&fg_process);
     let needs_recovery = needs_tui_recovery(&fg_process);
@@ -1290,10 +2013,7 @@ fn handle_send_prompt(pane: &str, message: &str, delay: u64) -> Result<()> {
     let send_output = Command::new("tmux")
         .args(&["send-keys", "-t", pane, "-l", message])
         .output()
-        .with_context(|| format!(
-            "Failed to send message to pane '{}'",
-            pane
-        ))?;
+        .with_context(|| format!("Failed to send message to pane '{}'", pane))?;
 
     if !send_output.status.success() {
         let stderr = String::from_utf8_lossy(&send_output.stderr);
@@ -1311,10 +2031,7 @@ fn handle_send_prompt(pane: &str, message: &str, delay: u64) -> Result<()> {
     let cr_output = Command::new("tmux")
         .args(&["send-keys", "-t", pane, "C-m"])
         .output()
-        .with_context(|| format!(
-            "Failed to send carriage return to pane '{}'",
-            pane
-        ))?;
+        .with_context(|| format!("Failed to send carriage return to pane '{}'", pane))?;
 
     if !cr_output.status.success() {
         let stderr = String::from_utf8_lossy(&cr_output.stderr);
@@ -1341,37 +2058,42 @@ fn handle_send_prompt(pane: &str, message: &str, delay: u64) -> Result<()> {
         "process"
     };
 
-    println!("✓ Execution complete in pane: {} ({}: {})", pane, process_type, fg_process);
+    println!(
+        "✓ Execution complete in pane: {} ({}: {})",
+        pane, process_type, fg_process
+    );
     Ok(())
 }
 
-/// Capture pane content and format output
+/// Capture content from a tmux pane (last N lines, with optional bat formatting)
 ///
-/// Handles both text (plain text, optionally bat-formatted) and JSON output formats.
-/// Validates pane existence before capture.
-/// If no pane is specified, captures the current active pane.
+/// Validates pane existence, captures content, and outputs in text or JSON format.
 /// Bat formatting is opt-in via --bat flag to avoid performance issues.
 fn handle_capture_pane(pane: Option<&str>, lines: u32, format: &str, use_bat: bool) -> Result<()> {
-    // Determine the target pane
-    let target_pane = if let Some(pane_spec) = pane {
-        // User specified a pane - validate format
-        parse_pane_target(pane_spec)
-            .with_context(|| format!("Invalid pane target '{}'", pane_spec))?;
-        pane_spec.to_string()
+    // Determine target pane
+    let target_pane = if let Some(p) = pane {
+        // Validate explicit pane format
+        parse_pane_target(p).with_context(|| format!("Invalid pane target '{}'", p))?;
+        p.to_string()
     } else {
-        // No pane specified - get current active pane
-        let context = get_current_tmux_context()
-            .with_context(|| "Failed to get current tmux context")?;
+        // No pane specified - use current active pane
+        let context = get_current_tmux_context().context("Failed to get current tmux context")?;
 
         if !context.in_tmux {
-            anyhow::bail!("Not running inside tmux. Please specify a pane target explicitly (e.g., 'session:window.pane')");
+            anyhow::bail!(
+                "Not in a tmux session. Please specify a pane target (e.g., 'session:window.pane')"
+            );
         }
 
-        let session = context.session_name
+        // Build target from context
+        let session = context
+            .session_name
             .ok_or_else(|| anyhow::anyhow!("Could not determine current session"))?;
-        let window = context.window_index
+        let window = context
+            .window_index
             .ok_or_else(|| anyhow::anyhow!("Could not determine current window"))?;
-        let pane_idx = context.pane_index
+        let pane_idx = context
+            .pane_index
             .ok_or_else(|| anyhow::anyhow!("Could not determine current pane"))?;
 
         format!("{}:{}.{}", session, window, pane_idx)
@@ -1414,10 +2136,16 @@ fn handle_capture_pane(pane: Option<&str>, lines: u32, format: &str, use_bat: bo
 
     if !capture_output.status.success() {
         let stderr = String::from_utf8_lossy(&capture_output.stderr);
-        anyhow::bail!("Tmux capture-pane failed for '{}': {}", target_pane, stderr.trim());
+        anyhow::bail!(
+            "Tmux capture-pane failed for '{}': {}",
+            target_pane,
+            stderr.trim()
+        );
     }
 
-    let content = String::from_utf8_lossy(&capture_output.stdout).trim().to_string();
+    let content = String::from_utf8_lossy(&capture_output.stdout)
+        .trim()
+        .to_string();
 
     match format {
         "json" => {
@@ -1438,52 +2166,41 @@ fn handle_capture_pane(pane: Option<&str>, lines: u32, format: &str, use_bat: bo
         "text" | _ => {
             // Text output format (default)
             if use_bat && !content.is_empty() {
-                // Try to use bat for syntax highlighting
-                // Use a simpler approach: just pipe content through bat
-                let bat_output = Command::new("bat")
-                    .args(&["--language", "text", "--color", "always", "--plain", "--paging", "never"])
+                // Try to use bat for syntax highlighting (opt-in)
+                let bat_result = Command::new("bat")
+                    .args(&[
+                        "--language",
+                        "text",
+                        "--color",
+                        "always",
+                        "--plain",
+                        "--paging",
+                        "never",
+                    ])
                     .stdin(std::process::Stdio::piped())
-                    .stdout(std::process::Stdio::piped())
-                    .stderr(std::process::Stdio::null()) // Suppress bat errors to avoid noise
+                    .stdout(std::process::Stdio::inherit())
+                    .stderr(std::process::Stdio::inherit())
                     .spawn();
 
-                match bat_output {
+                match bat_result {
                     Ok(mut child) => {
                         if let Some(mut stdin) = child.stdin.take() {
                             use std::io::Write;
-                            // Write content and close stdin
-                            if stdin.write_all(content.as_bytes()).is_ok() && stdin.flush().is_ok() {
+                            if stdin.write_all(content.as_bytes()).is_ok() {
                                 drop(stdin); // Close stdin to signal EOF
-                                
-                                // Wait for bat to complete and get output
-                                // wait_with_output() consumes child, so we can't kill after
-                                match child.wait_with_output() {
-                                    Ok(output) => {
-                                        if output.status.success() {
-                                            print!("{}", String::from_utf8_lossy(&output.stdout));
-                                            return Ok(());
-                                        }
-                                        // If bat failed, fall through to plain text
-                                    }
-                                    Err(_) => {
-                                        // If wait fails, fall through to plain text
-                                    }
-                                }
-                            } else {
-                                // If write fails, kill and fall through
-                                let _ = child.kill();
+                                let _ = child.wait(); // Wait for bat to finish
+                                return Ok(());
                             }
-                        } else {
-                            // If we can't get stdin, kill and fall through
-                            let _ = child.kill();
                         }
+                        // If bat fails, fall through to plain text
+                        let _ = child.kill();
                     }
                     Err(_) => {} // bat not available, fall through
                 }
             }
 
-            // Plain text output (fallback)
-            print!("{}", content);
+            // Plain text output (fallback or default)
+            println!("{}", content);
         }
     }
 
@@ -1535,21 +2252,30 @@ mod tests {
     fn test_parse_pane_target_invalid_format() {
         let result = parse_pane_target("invalid");
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Invalid pane format"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid pane format"));
     }
 
     #[test]
     fn test_parse_pane_target_invalid_window_number() {
         let result = parse_pane_target("session:abc.1");
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Invalid window number"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid window number"));
     }
 
     #[test]
     fn test_parse_pane_target_invalid_pane_number() {
         let result = parse_pane_target("session:1.xyz");
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Invalid pane number"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid pane number"));
     }
 
     #[test]
@@ -1568,7 +2294,10 @@ mod tests {
     fn test_pane_validation_invalid_format() {
         let result = handle_send_prompt("invalid-format", "echo test", 50);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Invalid pane target"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid pane target"));
     }
 
     #[test]
@@ -1771,5 +2500,4 @@ mod tests {
             assert_eq!(name, "a|b|c");
         }
     }
-
 }
