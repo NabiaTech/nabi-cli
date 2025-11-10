@@ -58,5 +58,17 @@ pub fn handle_health(command: HealthCommands) -> Result<()> {
             let port_flag = "--port";
             route_to_commander("health", &["dashboard", port_flag, &port_str])
         }
+        HealthCommands::Api { port, host, debug } => {
+            println!("{}", format!("🌐 Starting Health Monitoring API on http://{}:{}...", host, port).green().bold());
+
+            let port_str = port.to_string();
+            let mut args = vec!["api", &port_str, &host];
+
+            if debug {
+                args.push("--debug");
+            }
+
+            route_to_commander("health", &args)
+        }
     }
 }
