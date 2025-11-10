@@ -17,6 +17,7 @@ mod paths;
 mod repo;
 mod commands;
 use paths::NabiPaths;
+use commands::kernel;
 use commands::port;
 use commands::tmux;
 
@@ -137,6 +138,11 @@ enum Commands {
     Tmux {
         #[command(subcommand)]
         command: tmux::TmuxCommands,
+    },
+    /// Microkernel monitoring (memchain vs isolated panes)
+    Kernel {
+        #[command(subcommand)]
+        command: kernel::KernelCommands,
     },
     Hooks {
         #[command(subcommand)]
@@ -960,6 +966,7 @@ fn main() -> Result<()> {
         Commands::Agent { command } => handle_agent(command),
         Commands::Port { command } => handle_port(command),
         Commands::Tmux { command } => tmux::handle_tmux_commands(command),
+        Commands::Kernel { command } => kernel::handle_kernel_commands(command),
         Commands::Hooks { command } => handle_hooks(command),
         Commands::Mode { mode } => handle_mode(mode),
         Commands::Riff { args } => handle_riff(args),

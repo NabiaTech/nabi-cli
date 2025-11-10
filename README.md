@@ -17,6 +17,7 @@ nabi claude session list
 nabi data jsonl validate file.jsonl
 nabi federation agent list
 nabi tmux mem --format table
+nabi kernel mem --format text
 ```
 
 ## Architecture Summary
