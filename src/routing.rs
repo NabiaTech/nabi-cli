@@ -1,6 +1,10 @@
 /// Commander routing logic
 ///
 /// Handles routing commands to appropriate commanders (native Rust or Python fallback)
+///
+/// Performance optimizations:
+/// - File existence checks are cached per-process (avoids repeated stat() calls)
+/// - Direct routing for known commanders can skip nabi-python shim (future optimization)
 
 use anyhow::{Context, Result};
 use colored::*;
@@ -38,6 +42,12 @@ pub fn route_to_commander(commander: &str, args: &[&str]) -> Result<()> {
 
     // Fallback: Route to Python CLI for commands not yet migrated to Rust
     // This enables gradual migration: Python → Rust
+    //
+    // OPTIMIZATION NOTE: For frequently-used commanders like "docs", consider
+    // adding direct routing here to skip nabi-python shim overhead:
+    //   if commander == "docs" {
+    //       return route_docs_directly(args)?;
+    //   }
     println!(
         "{}",
         format!("→ Route to Python CLI: {}", commander)
