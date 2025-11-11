@@ -74,6 +74,21 @@ enum Commands {
         command: RepoCommands,
     },
     /// Codebase analysis and indexing (alias for 'repo analyze')
+    #[command(
+        long_about = "Fast-track access to repository analysis and code intelligence features.\n\n\
+                      This is a convenience alias for 'nabi repo analyze' providing quick access \
+                      to code indexing, symbol search, and multi-agent analysis workflows.\n\n\
+                      See 'nabi analyze repo --help' for detailed options.",
+        after_help = "EXAMPLES:\n  \
+                      nabi analyze repo ~/nabia/core\n  \
+                      nabi analyze repo . --lang rust\n\n\
+                      EQUIVALENT TO:\n  \
+                      nabi repo analyze ~/nabia/core\n  \
+                      nabi repo analyze . --lang rust\n\n\
+                      RELATED:\n  \
+                      nabi repo analyze - Full command path\n  \
+                      nabi repo graph    - Query the indexed code graph"
+    )]
     Analyze {
         #[command(subcommand)]
         command: AnalyzeCommands,
@@ -183,6 +198,23 @@ enum Commands {
         shell: CompletionShell,
     },
     /// deckgen utilities (schema + trace fixtures)
+    #[command(
+        long_about = "Generate test fixtures and schemas for pipeline validation.\n\n\
+                      Deckgen provides utilities for creating deterministic test data that can be \
+                      used to validate schema transformations, trace processing, and integration \
+                      workflows. All fixtures are seeded for consistency and reproducibility.",
+        after_help = "EXAMPLES:\n  \
+                      nabi deckgen trace\n  \
+                      nabi deckgen trace --output test-fixtures/trace.json\n\n\
+                      USES:\n  \
+                      • Create test fixtures for CI/CD pipelines\n  \
+                      • Validate schema transformations\n  \
+                      • Benchmark trace processing\n  \
+                      • Generate regression test data\n\n\
+                      RELATED:\n  \
+                      nabi repo analyze  - Analyze actual repositories\n  \
+                      nabi docs manifest - Generate repository manifests"
+    )]
     Deckgen {
         #[command(subcommand)]
         command: DeckgenCommands,
@@ -478,19 +510,38 @@ enum RepoCommands {
 #[derive(Subcommand)]
 enum AnalyzeCommands {
     /// Index a repository for code analysis (creates persistent graph)
-    ///
-    /// Analyzes a codebase and creates a searchable symbol index. The index is cached
-    /// and reused on subsequent runs unless --force is specified. Multiple analyses of
-    /// the same repository with different languages are stored separately to avoid
-    /// overwriting. This enables multi-agent workflows where agents can share cached
-    /// analysis results.
+    #[command(
+        long_about = "Analyze a codebase and create a searchable symbol index for code intelligence.\n\n\
+                      This command:\n  \
+                      • Scans the repository and extracts symbols, functions, and definitions\n  \
+                      • Creates a persistent code graph index for fast lookups\n  \
+                      • Caches results to reuse on subsequent runs (unless --force)\n  \
+                      • Supports multi-agent workflows through shared cache\n  \
+                      • Auto-detects language or accepts explicit hints\n\n\
+                      Useful for:\n  \
+                      • Symbol search and code navigation\n  \
+                      • Finding references and dependencies\n  \
+                      • Multi-agent code analysis workflows\n  \
+                      • Integration with IDE-like features",
+        after_help = "EXAMPLES:\n  \
+                      nabi analyze repo ~/nabia/core\n  \
+                      nabi analyze repo . --lang rust\n  \
+                      nabi analyze repo ~/project --force\n  \
+                      nabi analyze repo ~/project --format json\n\n\
+                      CACHING:\n  \
+                      Indexes are cached automatically in ~/.local/state/nabi/\n  \
+                      Use --force to rebuild even if cache exists.\n\n\
+                      RELATED:\n  \
+                      nabi repo analyze    - Alternative command path\n  \
+                      nabi repo graph      - Query the code graph"
+    )]
     Repo {
         /// Path to repository to analyze
         #[arg(value_name = "PATH")]
         repo_path: String,
 
         /// Language hint (auto-detect if not provided: rust, python, go, typescript)
-        #[arg(short, long)]
+        #[arg(short, long, value_name = "LANG")]
         lang: Option<String>,
 
         /// Force re-indexing (rebuild index even if cached version exists)
@@ -498,7 +549,7 @@ enum AnalyzeCommands {
         force: bool,
 
         /// Output format (text, json)
-        #[arg(short, long, default_value = "text")]
+        #[arg(short, long, default_value = "text", value_name = "FORMAT")]
         format: String,
     },
 }
@@ -1138,6 +1189,29 @@ enum HookDebugActions {
 #[derive(Subcommand)]
 enum DeckgenCommands {
     /// Emit the canonical seeded deckgen trace fixture
+    #[command(
+        long_about = "Generate the canonical seeded deckgen trace fixture for testing.\n\n\
+                      This command produces a deterministic trace JSON file that can be used for:\n  \
+                      • Testing schema transformations\n  \
+                      • Validating trace processing pipelines\n  \
+                      • Creating reproducible test fixtures\n  \
+                      • Benchmarking analysis tools\n\n\
+                      The fixture is seeded for consistency across runs, making it ideal for \
+                      regression testing and continuous integration.",
+        after_help = "EXAMPLES:\n  \
+                      nabi deckgen trace\n  \
+                      nabi deckgen trace --output ~/test-trace.json\n  \
+                      nabi deckgen trace -o trace.json | jq '.'\n\n\
+                      OUTPUT:\n  \
+                      Generates a JSON file with:\n  \
+                      • Canonical trace events\n  \
+                      • Seeded random data for reproducibility\n  \
+                      • Full schema validation\n\n\
+                      USES:\n  \
+                      • Test fixture generation\n  \
+                      • Pipeline validation\n  \
+                      • Regression testing"
+    )]
     Trace {
         /// Optional file path to write the trace JSON; stdout if omitted
         #[arg(short, long, value_name = "PATH")]
