@@ -1,25 +1,26 @@
 use anyhow::{Context, Result};
+use chrono::Utc;
 use clap::{Arg, Args, Command, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::{generate, Shell as CompletionShell};
 use colored::*;
+use serde::{Deserialize, Serialize};
+use serde_json;
+use sha2::{Digest, Sha256};
+use std::fmt;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process;
-use chrono::Utc;
-use std::fmt;
-use serde::{Deserialize, Serialize};
-use serde_json;
-use sha2::{Digest, Sha256};
 
+mod commands;
+mod deckgen;
 mod forge;
 mod paths;
 mod repo;
-mod commands;
-use paths::NabiPaths;
 use commands::kernel;
 use commands::port;
 use commands::tmux;
+use paths::NabiPaths;
 
 /// nabi - Unified Federation Command Gateway
 ///
@@ -71,6 +72,11 @@ enum Commands {
     Repo {
         #[command(subcommand)]
         command: RepoCommands,
+    },
+    /// Codebase analysis and indexing (alias for 'repo analyze')
+    Analyze {
+        #[command(subcommand)]
+        command: AnalyzeCommands,
     },
     /// Tool registry operations
     Tool {
@@ -176,6 +182,11 @@ enum Commands {
         #[arg(value_enum)]
         shell: CompletionShell,
     },
+    /// deckgen utilities (schema + trace fixtures)
+    Deckgen {
+        #[command(subcommand)]
+        command: DeckgenCommands,
+    },
     /// Health check (alias for 'self doctor')
     #[command(visible_alias = "doc")]
     Doctor,
@@ -198,19 +209,72 @@ enum ClaudeCommands {
 #[derive(Subcommand)]
 enum SessionActions {
     /// List available sessions
+    #[command(
+        long_about = "Display all available Claude sessions with quick reference information.\n\n\
+                      Shows:\n  \
+                      • Session UUID\n  \
+                      • Creation timestamp\n  \
+                      • Last activity time\n  \
+                      • Message count\n  \
+                      • Current status (active, archived)\n\n\
+                      Sessions include tab autocomplete for easy recovery.",
+        after_help = "EXAMPLES:\n  \
+                      nabi claude session list\n  \
+                      nabi claude session list --limit 20\n\n\
+                      TIPS:\n  \
+                      • Use session UUIDs with 'nabi claude session recover'\n  \
+                      • Sessions are searchable and filterable\n\n\
+                      RELATED:\n  \
+                      nabi claude session recover - Restore a session\n  \
+                      nabi claude session view    - View session details"
+    )]
     List {
         /// Limit number of sessions to display
-        #[arg(short, long, default_value = "10")]
+        #[arg(short, long, default_value = "10", value_name = "COUNT")]
         limit: usize,
     },
     /// Recover a session by UUID
+    #[command(
+        long_about = "Recover and restore a Claude session by its UUID.\n\n\
+                      This command:\n  \
+                      • Loads the session state\n  \
+                      • Restores conversation context\n  \
+                      • Reconnects to the session memory layer\n  \
+                      • Enables resuming work from where you left off\n\n\
+                      Tab completion supports session UUIDs from 'nabi claude session list'.",
+        after_help = "EXAMPLES:\n  \
+                      nabi claude session recover 550e8400-e29b-41d4-a716-446655440000\n\n\
+                      TIPS:\n  \
+                      • Use the first 8 characters for partial matching\n  \
+                      • Press TAB for autocomplete of recent sessions\n  \
+                      • Session state is automatically persisted\n\n\
+                      RELATED:\n  \
+                      nabi claude session list   - See all available sessions\n  \
+                      nabi claude session view   - View session details before recovering"
+    )]
     Recover {
-        /// Session UUID to recover
+        /// Session UUID to recover (supports tab autocomplete)
+        #[arg(value_name = "UUID")]
         uuid: String,
     },
     /// View session details
+    #[command(
+        long_about = "Display detailed information about a specific Claude session.\n\n\
+                      Shows:\n  \
+                      • Full session metadata\n  \
+                      • Message history summary\n  \
+                      • Token usage statistics\n  \
+                      • Memory footprint\n  \
+                      • Associated files and context",
+        after_help = "EXAMPLES:\n  \
+                      nabi claude session view 550e8400-e29b-41d4-a716-446655440000\n\n\
+                      RELATED:\n  \
+                      nabi claude session list    - List all sessions\n  \
+                      nabi claude session recover - Restore this session"
+    )]
     View {
         /// Session UUID to view
+        #[arg(value_name = "UUID")]
         uuid: String,
     },
 }
@@ -288,6 +352,11 @@ enum FederationCommands {
 #[derive(Subcommand)]
 enum DocsCommands {
     /// Manifest management (SHA256 tracking)
+    #[command(
+        long_about = "Manage repository manifests for integrity tracking and change detection.\n\n\
+                      Manifests track file SHA256 hashes to detect when repository content \
+                      changes, enabling automated compliance checking and documentation updates."
+    )]
     Manifest {
         #[command(subcommand)]
         action: ManifestActions,
@@ -297,15 +366,64 @@ enum DocsCommands {
 #[derive(Subcommand)]
 enum ManifestActions {
     /// List all manifests
+    #[command(
+        long_about = "Display all generated manifests and their metadata.\n\n\
+                      Shows:\n  \
+                      • Repository paths\n  \
+                      • Generation timestamps\n  \
+                      • File counts and sizes\n  \
+                      • Hash information for integrity verification",
+        after_help = "EXAMPLES:\n  \
+                      nabi docs manifest list\n\n\
+                      RELATED:\n  \
+                      nabi docs manifest generate  - Create a new manifest\n  \
+                      nabi docs manifest validate  - Check against existing manifest"
+    )]
     List,
     /// Validate a repository against its manifest
+    #[command(
+        long_about = "Verify that repository files match their recorded manifests.\n\n\
+                      This command:\n  \
+                      • Compares current file hashes to manifest records\n  \
+                      • Detects added, modified, or deleted files\n  \
+                      • Reports integrity violations\n  \
+                      • Useful for compliance checks and change detection",
+        after_help = "EXAMPLES:\n  \
+                      nabi docs manifest validate ~/nabia/memchain\n  \
+                      nabi docs manifest validate .\n\n\
+                      Exit codes:\n  \
+                      • 0: Validation passed\n  \
+                      • 1: Validation failed (files changed)\n\n\
+                      RELATED:\n  \
+                      nabi docs manifest generate - Update manifest after changes\n  \
+                      nabi docs manifest list     - View all manifests"
+    )]
     Validate {
         /// Repository path to validate
+        #[arg(value_name = "REPO_PATH")]
         repo_path: String,
     },
     /// Generate a manifest for a repository
+    #[command(
+        long_about = "Create or update a manifest for a repository.\n\n\
+                      Scans all files in the repository and records:\n  \
+                      • SHA256 hash for each file\n  \
+                      • File sizes and modification times\n  \
+                      • Directory structure\n  \
+                      • Exclusion patterns (.gitignore)\n\n\
+                      Use this after making significant changes to update the baseline.",
+        after_help = "EXAMPLES:\n  \
+                      nabi docs manifest generate ~/nabia/memchain\n  \
+                      nabi docs manifest generate .  # Current directory\n\n\
+                      The manifest is stored at:\n  \
+                      <repo>/.manifests/manifest.json\n\n\
+                      RELATED:\n  \
+                      nabi docs manifest validate - Verify against this manifest\n  \
+                      nabi docs manifest list     - View all manifests"
+    )]
     Generate {
         /// Repository path to generate for
+        #[arg(value_name = "REPO_PATH")]
         repo_path: String,
     },
 }
@@ -327,6 +445,12 @@ enum RepoCommands {
         strict: bool,
     },
     /// Index a repository for code analysis (creates persistent graph)
+    ///
+    /// Analyzes a codebase and creates a searchable symbol index. The index is cached
+    /// and reused on subsequent runs unless --force is specified. Multiple analyses of
+    /// the same repository with different languages are stored separately to avoid
+    /// overwriting. This enables multi-agent workflows where agents can share cached
+    /// analysis results.
     Analyze {
         /// Path to repository to analyze
         #[arg(value_name = "PATH")]
@@ -336,8 +460,8 @@ enum RepoCommands {
         #[arg(short, long)]
         lang: Option<String>,
 
-        /// Force re-indexing (skip cache check)
-        #[arg(short, long)]
+        /// Force re-indexing (rebuild index even if cached version exists)
+        #[arg(long)]
         force: bool,
 
         /// Output format (text, json)
@@ -348,6 +472,34 @@ enum RepoCommands {
     Graph {
         #[command(subcommand)]
         action: GraphActions,
+    },
+}
+
+#[derive(Subcommand)]
+enum AnalyzeCommands {
+    /// Index a repository for code analysis (creates persistent graph)
+    ///
+    /// Analyzes a codebase and creates a searchable symbol index. The index is cached
+    /// and reused on subsequent runs unless --force is specified. Multiple analyses of
+    /// the same repository with different languages are stored separately to avoid
+    /// overwriting. This enables multi-agent workflows where agents can share cached
+    /// analysis results.
+    Repo {
+        /// Path to repository to analyze
+        #[arg(value_name = "PATH")]
+        repo_path: String,
+
+        /// Language hint (auto-detect if not provided: rust, python, go, typescript)
+        #[arg(short, long)]
+        lang: Option<String>,
+
+        /// Force re-indexing (rebuild index even if cached version exists)
+        #[arg(long)]
+        force: bool,
+
+        /// Output format (text, json)
+        #[arg(short, long, default_value = "text")]
+        format: String,
     },
 }
 
@@ -454,12 +606,69 @@ enum RegistryActions {
 #[derive(Subcommand)]
 enum SelfCommands {
     /// Health check all commanders
+    #[command(
+        long_about = "Run comprehensive health checks on your federation infrastructure.\n\n\
+                      Validates:\n  \
+                      • Network connectivity (Tailscale, local services)\n  \
+                      • Service availability (Loki, Grafana, coordination server)\n  \
+                      • Port allocations and conflicts\n  \
+                      • Configuration coherence\n  \
+                      • Hook system status\n  \
+                      • Federation node connectivity",
+        after_help = "EXAMPLES:\n  \
+                      nabi self doctor\n\n\
+                      Output includes status codes:\n  \
+                      ✓ = Healthy\n  \
+                      ⚠ = Warning (degraded but functional)\n  \
+                      ✗ = Critical (action required)\n\n\
+                      RELATED:\n  \
+                      nabi health       - Alias for this command\n  \
+                      nabi port check   - Check port configuration specifically\n  \
+                      nabi federation status - Check federation node status"
+    )]
     Doctor,
     /// Update all components
+    #[command(
+        long_about = "Update nabi-cli and all registered tools to latest versions.\n\n\
+                      Updates:\n  \
+                      • The CLI itself\n  \
+                      • Registered external tools\n  \
+                      • Dependencies and schemas\n\n\
+                      This operation is safe and can be run during development."
+    )]
     Update,
     /// Show configuration
+    #[command(
+        long_about = "Display current nabi configuration and environment.\n\n\
+                      Shows:\n  \
+                      • Active configuration paths\n  \
+                      • Environment variables\n  \
+                      • CLI version\n  \
+                      • Loaded schemas",
+        after_help = "EXAMPLES:\n  \
+                      nabi self config\n\n\
+                      Configuration is read from (in order):\n  \
+                      1. ~/.config/nabi/\n  \
+                      2. ~/.nabi/ (symlinks to XDG directories)\n  \
+                      3. Built-in defaults"
+    )]
     Config,
     /// Generate CLI command specification
+    #[command(
+        long_about = "Generate a specification of all CLI commands in markdown or JSON format.\n\n\
+                      Useful for:\n  \
+                      • Documentation generation\n  \
+                      • Integration with external tools\n  \
+                      • CI/CD automation\n  \
+                      • Command discovery",
+        after_help = "EXAMPLES:\n  \
+                      nabi self spec\n  \
+                      nabi self spec --format json | jq '.'\n  \
+                      nabi self spec --format markdown > docs/CLI_REFERENCE.md\n\n\
+                      RELATED:\n  \
+                      nabi --help  - Interactive help\n  \
+                      nabi <cmd> --help - Help for specific command"
+    )]
     Spec {
         /// Output format (markdown or json)
         #[arg(value_enum, default_value_t = SpecFormat::Markdown)]
@@ -535,24 +744,69 @@ enum DbCommands {
 #[derive(Subcommand)]
 enum RecordCommands {
     /// Start recording current tmux window
+    #[command(
+        long_about = "Begin recording terminal session activity in the active tmux window.\n\n\
+                      Records all input and output for later playback. Useful for:\n  \
+                      • Session persistence\n  \
+                      • Workflow documentation\n  \
+                      • Debugging and incident analysis\n  \
+                      • Creating training materials",
+        after_help = "EXAMPLES:\n  \
+                      nabi record start\n  \
+                      nabi record start --output ~/session-$(date +%s).cast\n\n\
+                      The default output format is asciinema (.cast) which is widely compatible.\n\n\
+                      RELATED:\n  \
+                      nabi record stop   - Stop active recording\n  \
+                      nabi record list   - View all recordings\n  \
+                      nabi record server - Manage tvmux server"
+    )]
     Start {
-        /// Optional output file path
-        #[arg(short, long)]
+        /// Optional output file path (defaults to auto-generated)
+        #[arg(short, long, value_name = "PATH")]
         output: Option<String>,
     },
     /// Stop active recording(s)
+    #[command(
+        long_about = "Stop terminal session recording.\n\n\
+                      • Without ID: stops all active recordings\n  \
+                      • With ID: stops specific recording by ID",
+        after_help = "EXAMPLES:\n  \
+                      nabi record stop          # Stop all recordings\n  \
+                      nabi record stop abc123   # Stop specific recording\n\n\
+                      RELATED:\n  \
+                      nabi record start - Start a new recording\n  \
+                      nabi record list  - View recording IDs"
+    )]
     Stop {
         /// Recording ID to stop (all if omitted)
+        #[arg(value_name = "ID")]
         id: Option<String>,
     },
     /// List all active recordings
+    #[command(
+        long_about = "Display all currently active terminal recordings.\n\n\
+                      Shows:\n  \
+                      • Recording ID\n  \
+                      • Start time\n  \
+                      • Output file path\n  \
+                      • Status (active, paused, etc.)",
+        after_help = "EXAMPLES:\n  \
+                      nabi record list\n\n\
+                      RELATED:\n  \
+                      nabi record start - Start a new recording\n  \
+                      nabi record stop  - Stop an active recording"
+    )]
     List,
     /// Manage tvmux server
+    #[command(long_about = "Control the tvmux recording server daemon.\n\n\
+                      The server manages recording sessions and must be running for \
+                      the record command to work properly.")]
     Server {
         #[command(subcommand)]
         action: ServerActions,
     },
     /// Configuration
+    #[command(long_about = "Configure tvmux recording parameters and behavior.")]
     Config {
         #[command(subcommand)]
         action: ConfigActions,
@@ -562,22 +816,72 @@ enum RecordCommands {
 #[derive(Subcommand)]
 enum ServerActions {
     /// Start the tvmux server
+    #[command(
+        long_about = "Start the tvmux recording daemon.\n\n\
+                      Enables recording functionality for terminal sessions.",
+        after_help = "EXAMPLES:\n  \
+                      nabi record server start\n\n\
+                      RELATED:\n  \
+                      nabi record server stop   - Stop the server\n  \
+                      nabi record server status - Check server status"
+    )]
     Start,
     /// Stop the tvmux server
+    #[command(
+        long_about = "Stop the tvmux recording daemon.\n\n\
+                      Stops all active recordings and disables new recordings.",
+        after_help = "EXAMPLES:\n  \
+                      nabi record server stop\n\n\
+                      RELATED:\n  \
+                      nabi record server start  - Start the server\n  \
+                      nabi record server status - Check server status"
+    )]
     Stop,
     /// Check server status
+    #[command(
+        long_about = "Check whether the tvmux recording server is running.\n\n\
+                      Displays:\n  \
+                      • Server PID\n  \
+                      • Memory usage\n  \
+                      • Active recordings count\n  \
+                      • Uptime",
+        after_help = "EXAMPLES:\n  \
+                      nabi record server status\n\n\
+                      RELATED:\n  \
+                      nabi record server start - Start the server\n  \
+                      nabi record server stop  - Stop the server"
+    )]
     Status,
 }
 
 #[derive(Subcommand)]
 enum ConfigActions {
     /// Show tvmux configuration
+    #[command(
+        long_about = "Display current tvmux configuration.\n\n\
+                      Shows all active settings and their values.",
+        after_help = "EXAMPLES:\n  \
+                      nabi record config show\n\n\
+                      RELATED:\n  \
+                      nabi record config set - Change configuration"
+    )]
     Show,
     /// Set configuration value
+    #[command(
+        long_about = "Update a tvmux configuration parameter.\n\n\
+                      Configuration changes take effect immediately.",
+        after_help = "EXAMPLES:\n  \
+                      nabi record config set output-dir ~/recordings\n  \
+                      nabi record config set compression gzip\n\n\
+                      RELATED:\n  \
+                      nabi record config show - View current configuration"
+    )]
     Set {
-        /// Configuration key
+        /// Configuration key to set
+        #[arg(value_name = "KEY")]
         key: String,
-        /// Configuration value
+        /// New configuration value
+        #[arg(value_name = "VALUE")]
         value: String,
     },
 }
@@ -638,39 +942,138 @@ enum DaemonActions {
 #[derive(Subcommand)]
 enum PortCommands {
     /// List all registered ports
+    #[command(
+        long_about = "Display all port allocations across platforms with current status.\n\n\
+                      Shows service names, assigned ports, protocols, and platform-specific \
+                      overrides. Useful for understanding the complete federation topology.",
+        after_help = "EXAMPLES:\n  \
+                      nabi port list              # List all ports\n  \
+                      nabi port list --platform rpi\n\n\
+                      RELATED:\n  \
+                      nabi port check       - Validate ports on current platform\n  \
+                      nabi port cross-platform - Check for cross-platform conflicts"
+    )]
     List {
         /// Platform filter (macos, wsl, rpi)
-        #[arg(short, long)]
+        #[arg(short, long, value_name = "PLATFORM")]
         platform: Option<String>,
     },
     /// Validate port allocations on current platform
+    #[command(
+        long_about = "Perform health checks on all port allocations for your platform.\n\n\
+                      Validates that:\n  \
+                      • All required services have ports assigned\n  \
+                      • No local port conflicts exist\n  \
+                      • Services match the registry schema",
+        after_help = "EXAMPLES:\n  \
+                      nabi port check\n\n\
+                      RELATED:\n  \
+                      nabi port list          - View all port allocations\n  \
+                      nabi port cross-platform - Check conflicts across all platforms"
+    )]
     Check,
     /// Check cross-platform conflicts
+    #[command(
+        long_about = "Analyze port usage across all platforms (macOS, WSL, RPi).\n\n\
+                      Detects scenarios where:\n  \
+                      • Same port is used on different platforms\n  \
+                      • Port ranges conflict\n  \
+                      • Services should use different ports for isolation",
+        after_help = "EXAMPLES:\n  \
+                      nabi port cross-platform\n\n\
+                      RELATED:\n  \
+                      nabi port check - Validate current platform only\n  \
+                      nabi port drift - Investigate historical conflicts"
+    )]
     CrossPlatform,
     /// Safely migrate service to new port
+    #[command(
+        long_about = "Migrate a service from one port to another safely.\n\n\
+                      This command:\n  \
+                      • Updates port registry atomically\n  \
+                      • Validates new port is available\n  \
+                      • Supports dry-run to preview changes\n  \
+                      • Records migration in federation state",
+        after_help = "EXAMPLES:\n  \
+                      nabi port shift grafana 3000 3002\n  \
+                      nabi port shift loki 3100 3101 --dry-run\n\n\
+                      NOTE: Use --dry-run first to verify the change before committing.\n\n\
+                      RELATED:\n  \
+                      nabi port check  - Validate new configuration\n  \
+                      nabi port list   - View all allocations"
+    )]
     Shift {
-        /// Service name
+        /// Service name to migrate
+        #[arg(value_name = "SERVICE")]
         service: String,
-        /// Current port
+        /// Current port number
+        #[arg(value_name = "OLD_PORT")]
         old_port: u16,
-        /// New port
+        /// New port number
+        #[arg(value_name = "NEW_PORT")]
         new_port: u16,
-        /// Dry run (don't execute)
+        /// Dry run - preview without executing
         #[arg(long)]
         dry_run: bool,
     },
     /// Perform forensic analysis of drift period
+    #[command(
+        long_about = "Analyze port configuration drift during a specific time window.\n\n\
+                      Useful for:\n  \
+                      • Understanding when conflicts appeared\n  \
+                      • Tracing root cause of port migration issues\n  \
+                      • Auditing historical changes\n  \
+                      • Planning recovery procedures",
+        after_help = "EXAMPLES:\n  \
+                      nabi port drift\n  \
+                      nabi port drift --forensic\n  \
+                      nabi port drift --since '2 days ago'\n  \
+                      nabi port drift --forensic --since '1 week ago'\n\n\
+                      RELATED:\n  \
+                      nabi port fix   - Auto-generate fix commands\n  \
+                      nabi port check - Validate current state"
+    )]
     Drift {
-        /// Enable forensic mode
+        /// Enable detailed forensic analysis with event logs
         #[arg(long)]
         forensic: bool,
-        /// Time since (e.g., "2 days ago")
-        #[arg(long)]
+        /// Time range to analyze (e.g., "2 days ago", "1 week ago")
+        #[arg(long, value_name = "TIME")]
         since: Option<String>,
     },
     /// Auto-generate fix commands for conflicts
+    #[command(
+        long_about = "Analyze current port conflicts and generate automated fix commands.\n\n\
+                      This command:\n  \
+                      • Detects conflicts between services\n  \
+                      • Suggests non-breaking migrations\n  \
+                      • Outputs shell commands ready to execute\n  \
+                      • Prioritizes by impact and risk",
+        after_help = "EXAMPLES:\n  \
+                      nabi port fix\n\n\
+                      The output will be shell commands like:\n  \
+                      nabi port shift service 3000 3002\n\n\
+                      RELATED:\n  \
+                      nabi port shift - Execute migration manually\n  \
+                      nabi port drift - Investigate root causes"
+    )]
     Fix,
     /// Generate .env file for docker-compose
+    #[command(
+        long_about = "Generate environment variables for docker-compose configuration.\n\n\
+                      Creates a .env file with all port mappings and service endpoints,\n\
+                      making it easy to keep docker-compose in sync with registry.",
+        after_help = "EXAMPLES:\n  \
+                      nabi port generate-env > .env\n  \
+                      nabi port generate-env | tee .env\n\n\
+                      The generated .env contains mappings like:\n  \
+                      GRAFANA_PORT=3002\n  \
+                      LOKI_PORT=3100\n  \
+                      SERVICE_ENDPOINT=http://localhost:8100\n\n\
+                      RELATED:\n  \
+                      nabi port list   - View all allocations\n  \
+                      nabi port check  - Validate configuration"
+    )]
     GenerateEnv,
 }
 
@@ -730,6 +1133,16 @@ enum HookDebugActions {
     },
     /// Disable debug mode (prints env vars to unset)
     Disable,
+}
+
+#[derive(Subcommand)]
+enum DeckgenCommands {
+    /// Emit the canonical seeded deckgen trace fixture
+    Trace {
+        /// Optional file path to write the trace JSON; stdout if omitted
+        #[arg(short, long, value_name = "PATH")]
+        output: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -955,9 +1368,14 @@ fn main() -> Result<()> {
         Commands::Forge { command } => handle_forge(command),
         Commands::Docs { command } => handle_docs(command),
         Commands::Repo { command } => handle_repo(command),
+        Commands::Analyze { command } => handle_analyze(command),
         Commands::Tool { command } => handle_tool(command),
         Commands::Register { command } => handle_register(command),
-        Commands::Scan { path, tags, confidence } => handle_scan(path, tags, confidence),
+        Commands::Scan {
+            path,
+            tags,
+            confidence,
+        } => handle_scan(path, tags, confidence),
         Commands::Watch { path } => handle_watch(path),
         Commands::Aura { command } => handle_aura(command),
         Commands::Configure { command } => handle_configure(command),
@@ -973,6 +1391,7 @@ fn main() -> Result<()> {
         Commands::Recover { command } => handle_recover(command),
         Commands::Health { command } => handle_health(command),
         Commands::Completions { shell } => handle_completions(shell),
+        Commands::Deckgen { command } => handle_deckgen(command),
         Commands::Doctor => handle_self(SelfCommands::Doctor),
     }
 }
@@ -982,14 +1401,23 @@ fn handle_claude(command: ClaudeCommands) -> Result<()> {
         ClaudeCommands::Session { action } => match action {
             SessionActions::List { limit } => {
                 println!("{}", "📋 Listing Claude sessions...".cyan().bold());
-                route_to_commander("claude", &["session", "list", "--limit", &limit.to_string()])
+                route_to_commander(
+                    "claude",
+                    &["session", "list", "--limit", &limit.to_string()],
+                )
             }
             SessionActions::Recover { uuid } => {
-                println!("{}", format!("🔄 Recovering session {}...", uuid).cyan().bold());
+                println!(
+                    "{}",
+                    format!("🔄 Recovering session {}...", uuid).cyan().bold()
+                );
                 route_to_commander("claude", &["session", "recover", &uuid])
             }
             SessionActions::View { uuid } => {
-                println!("{}", format!("👁  Viewing session {}...", uuid).cyan().bold());
+                println!(
+                    "{}",
+                    format!("👁  Viewing session {}...", uuid).cyan().bold()
+                );
                 route_to_commander("claude", &["session", "view", &uuid])
             }
         },
@@ -999,7 +1427,10 @@ fn handle_claude(command: ClaudeCommands) -> Result<()> {
                 route_to_commander("claude", &["project", "list"])
             }
             ProjectActions::Migrate { path } => {
-                println!("{}", format!("📦 Migrating project to {}...", path).cyan().bold());
+                println!(
+                    "{}",
+                    format!("📦 Migrating project to {}...", path).cyan().bold()
+                );
                 route_to_commander("claude", &["project", "migrate", &path])
             }
         },
@@ -1015,8 +1446,16 @@ fn handle_data(command: DataCommands) -> Result<()> {
             }
             JsonlActions::Repair { file, output } => {
                 let output_file = output.unwrap_or_else(|| format!("{}.fixed", file));
-                println!("{}", format!("🔧 Repairing {} -> {}...", file, output_file).yellow().bold());
-                route_to_commander("data", &["jsonl", "repair", &file, "--output", &output_file])
+                println!(
+                    "{}",
+                    format!("🔧 Repairing {} -> {}...", file, output_file)
+                        .yellow()
+                        .bold()
+                );
+                route_to_commander(
+                    "data",
+                    &["jsonl", "repair", &file, "--output", &output_file],
+                )
             }
             JsonlActions::View { file, query } => {
                 println!("{}", format!("👁  Viewing {}...", file).cyan().bold());
@@ -1040,7 +1479,10 @@ fn handle_federation(command: FederationCommands) -> Result<()> {
                 route_to_commander("federation", &["agent", "list"])
             }
             AgentActions::Spawn { role } => {
-                println!("{}", format!("🚀 Spawning {} agent...", role).magenta().bold());
+                println!(
+                    "{}",
+                    format!("🚀 Spawning {} agent...", role).magenta().bold()
+                );
                 route_to_commander("federation", &["agent", "spawn", &role])
             }
         },
@@ -1050,11 +1492,17 @@ fn handle_federation(command: FederationCommands) -> Result<()> {
                 route_to_commander("federation", &["sync", "list"])
             }
             SyncActions::Pause { folder } => {
-                println!("{}", format!("⏸️  Pausing folder {}...", folder).yellow().bold());
+                println!(
+                    "{}",
+                    format!("⏸️  Pausing folder {}...", folder).yellow().bold()
+                );
                 route_to_commander("federation", &["sync", "pause", &folder])
             }
             SyncActions::Resume { folder } => {
-                println!("{}", format!("▶️  Resuming folder {}...", folder).green().bold());
+                println!(
+                    "{}",
+                    format!("▶️  Resuming folder {}...", folder).green().bold()
+                );
                 route_to_commander("federation", &["sync", "resume", &folder])
             }
             SyncActions::Status { folder } => {
@@ -1077,8 +1525,16 @@ fn handle_federation(command: FederationCommands) -> Result<()> {
                 route_to_commander("federation", &["registry", "health"])
             }
             RegistryActions::Add { name, service_type } => {
-                println!("{}", format!("➕ Adding {} ({})...", name, service_type).green().bold());
-                route_to_commander("federation", &["registry", "add", &name, "--type", &service_type])
+                println!(
+                    "{}",
+                    format!("➕ Adding {} ({})...", name, service_type)
+                        .green()
+                        .bold()
+                );
+                route_to_commander(
+                    "federation",
+                    &["registry", "add", &name, "--type", &service_type],
+                )
             }
             RegistryActions::Remove { name } => {
                 println!("{}", format!("➖ Removing {}...", name).red().bold());
@@ -1115,11 +1571,21 @@ fn handle_docs(command: DocsCommands) -> Result<()> {
                 route_to_commander("docs", &["manifest", "list"])
             }
             ManifestActions::Validate { repo_path } => {
-                println!("{}", format!("🔍 Validating manifest for {}...", repo_path).cyan().bold());
+                println!(
+                    "{}",
+                    format!("🔍 Validating manifest for {}...", repo_path)
+                        .cyan()
+                        .bold()
+                );
                 route_to_commander("docs", &["manifest", "validate", &repo_path])
             }
             ManifestActions::Generate { repo_path } => {
-                println!("{}", format!("✨ Generating manifest for {}...", repo_path).cyan().bold());
+                println!(
+                    "{}",
+                    format!("✨ Generating manifest for {}...", repo_path)
+                        .cyan()
+                        .bold()
+                );
                 route_to_commander("docs", &["manifest", "generate", &repo_path])
             }
         },
@@ -1128,25 +1594,43 @@ fn handle_docs(command: DocsCommands) -> Result<()> {
 
 fn handle_repo(command: RepoCommands) -> Result<()> {
     match command {
-        RepoCommands::Check { path, format, strict } => {
+        RepoCommands::Check {
+            path,
+            format,
+            strict,
+        } => {
             let repo_path = path.unwrap_or_else(|| ".".to_string());
             repo::check(&repo_path, &format, strict)
         }
-        RepoCommands::Analyze { repo_path, lang, force, format } => {
-            repo::analyze(&repo_path, lang.as_deref(), force, &format)
-        }
-        RepoCommands::Graph { action } => {
-            handle_graph(action)
-        }
+        RepoCommands::Analyze {
+            repo_path,
+            lang,
+            force,
+            format,
+        } => repo::analyze(&repo_path, lang.as_deref(), force, &format),
+        RepoCommands::Graph { action } => handle_graph(action),
+    }
+}
+
+fn handle_analyze(command: AnalyzeCommands) -> Result<()> {
+    match command {
+        AnalyzeCommands::Repo {
+            repo_path,
+            lang,
+            force,
+            format,
+        } => repo::analyze(&repo_path, lang.as_deref(), force, &format),
     }
 }
 
 fn handle_tool(command: ToolCommands) -> Result<()> {
     match command {
         ToolCommands::Register(args) => register_tool(args),
-        ToolCommands::List { format, status, runtime } => {
-            list_tools(&format, status.as_deref(), runtime.as_deref())
-        }
+        ToolCommands::List {
+            format,
+            status,
+            runtime,
+        } => list_tools(&format, status.as_deref(), runtime.as_deref()),
     }
 }
 
@@ -1173,12 +1657,13 @@ fn register_tool(args: ToolRegisterArgs) -> Result<()> {
         .unwrap_or_else(|| derive_tool_name(&canonical_path));
 
     let slug = slugify(&tool_name);
-    let tool_id = if slug.is_empty() { "tool".to_string() } else { slug };
+    let tool_id = if slug.is_empty() {
+        "tool".to_string()
+    } else {
+        slug
+    };
 
-    let command_name = args
-        .command
-        .clone()
-        .unwrap_or_else(|| tool_id.clone());
+    let command_name = args.command.clone().unwrap_or_else(|| tool_id.clone());
 
     let runtime = args
         .runtime
@@ -1188,8 +1673,7 @@ fn register_tool(args: ToolRegisterArgs) -> Result<()> {
     if args.runtime.is_none() && matches!(runtime, RuntimeKind::Other) {
         println!(
             "{}",
-            "⚠️  Could not infer runtime automatically; recorded as 'other'."
-                .yellow()
+            "⚠️  Could not infer runtime automatically; recorded as 'other'.".yellow()
         );
     }
 
@@ -1198,10 +1682,7 @@ fn register_tool(args: ToolRegisterArgs) -> Result<()> {
         .clone()
         .unwrap_or_else(|| runtime.default_version_hint().to_string());
 
-    let tool_version = args
-        .version
-        .clone()
-        .unwrap_or_else(|| "0.1.0".to_string());
+    let tool_version = args.version.clone().unwrap_or_else(|| "0.1.0".to_string());
 
     let description = args
         .description
@@ -1242,19 +1723,15 @@ fn register_tool(args: ToolRegisterArgs) -> Result<()> {
     let venv_location = if let Some(explicit) = &args.venv {
         Some(explicit.clone())
     } else if needs_default_venv(runtime) {
-        let venv_path = NabiPaths::venv_dir()?
-            .join(tool_id.replace('-', "_"));
+        let venv_path = NabiPaths::venv_dir()?.join(tool_id.replace('-', "_"));
         Some(path_to_tilde(&venv_path)?)
     } else {
         None
     };
 
     // Validate and setup dependencies
-    let (validated_deps, dep_messages) = validate_tool_dependencies(
-        &source_path,
-        &venv_location,
-        runtime
-    )?;
+    let (validated_deps, dep_messages) =
+        validate_tool_dependencies(&source_path, &venv_location, runtime)?;
 
     // Print dependency validation messages
     for msg in &dep_messages {
@@ -1277,10 +1754,7 @@ fn register_tool(args: ToolRegisterArgs) -> Result<()> {
         .clone()
         .unwrap_or_else(|| "1.0.0".to_string());
 
-    let status = args
-        .status
-        .clone()
-        .unwrap_or_else(|| "active".to_string());
+    let status = args.status.clone().unwrap_or_else(|| "active".to_string());
 
     let manifest = ToolManifest {
         tool: ToolSection {
@@ -1331,8 +1805,8 @@ fn register_tool(args: ToolRegisterArgs) -> Result<()> {
         },
     };
 
-    let rendered = toml::to_string_pretty(&manifest)
-        .context("Failed to serialize tool manifest to TOML")?;
+    let rendered =
+        toml::to_string_pretty(&manifest).context("Failed to serialize tool manifest to TOML")?;
 
     let created_on = Utc::now().format("%Y-%m-%d");
 
@@ -1347,8 +1821,12 @@ fn register_tool(args: ToolRegisterArgs) -> Result<()> {
     output.push_str(&rendered);
 
     let tools_dir = NabiPaths::config_dir()?.join("tools");
-    fs::create_dir_all(&tools_dir)
-        .with_context(|| format!("Failed to create tools directory at {}", tools_dir.display()))?;
+    fs::create_dir_all(&tools_dir).with_context(|| {
+        format!(
+            "Failed to create tools directory at {}",
+            tools_dir.display()
+        )
+    })?;
 
     let manifest_path = tools_dir.join(format!("{}.toml", tool_id));
 
@@ -1397,16 +1875,14 @@ fn validate_tool_dependencies(
     }
 
     // Look for TOML config with dependencies
-    let mut possible_locations = vec![
-        Some(source_path.join("requirements.txt")),
-    ];
+    let mut possible_locations = vec![Some(source_path.join("requirements.txt"))];
 
     // Add TOML path if source file name is available
     if let Some(file_name) = source_path.file_name() {
         if let Some(parent) = source_path.parent().and_then(|p| p.parent()) {
-            possible_locations.push(Some(parent.join("tools")
-                .join(file_name)
-                .with_extension("toml")));
+            possible_locations.push(Some(
+                parent.join("tools").join(file_name).with_extension("toml"),
+            ));
         }
     }
 
@@ -1427,9 +1903,11 @@ fn validate_tool_dependencies(
                     .map(|line| line.trim().to_string())
                     .collect();
                 found_deps = !dependencies.is_empty();
-                messages.push(format!("📦 Found {} dependencies in {}",
+                messages.push(format!(
+                    "📦 Found {} dependencies in {}",
                     dependencies.len(),
-                    toml_path.display()));
+                    toml_path.display()
+                ));
                 break;
             }
         } else if toml_path.extension().and_then(|e| e.to_str()) == Some("toml") {
@@ -1448,9 +1926,11 @@ fn validate_tool_dependencies(
                             .map(|s| s.to_string())
                             .collect();
                         found_deps = !dependencies.is_empty();
-                        messages.push(format!("📦 Found {} dependencies in {}",
+                        messages.push(format!(
+                            "📦 Found {} dependencies in {}",
                             dependencies.len(),
-                            toml_path.display()));
+                            toml_path.display()
+                        ));
                         break;
                     }
                 }
@@ -1487,7 +1967,10 @@ fn validate_tool_dependencies(
 
         // Install dependencies
         if !dependencies.is_empty() {
-            messages.push(format!("📥 Installing {} dependencies...", dependencies.len()));
+            messages.push(format!(
+                "📥 Installing {} dependencies...",
+                dependencies.len()
+            ));
 
             // Create temporary requirements file
             let temp_req = std::env::temp_dir().join("nabi_temp_requirements.txt");
@@ -1495,9 +1978,12 @@ fn validate_tool_dependencies(
 
             let status = process::Command::new("uv")
                 .args(&[
-                    "pip", "install",
-                    "-r", temp_req.to_str().unwrap(),
-                    "--python", python_bin.to_str().unwrap()
+                    "pip",
+                    "install",
+                    "-r",
+                    temp_req.to_str().unwrap(),
+                    "--python",
+                    python_bin.to_str().unwrap(),
                 ])
                 .status()
                 .context("Failed to install dependencies with uv")?;
@@ -1633,9 +2119,12 @@ fn slugify(name: &str) -> String {
 
 fn shell_quote(path: &Path) -> String {
     let raw = path.to_string_lossy();
-    let needs_quotes = raw
-        .chars()
-        .any(|c| matches!(c, ' ' | '"' | '\'' | '(' | ')' | '$' | '`' | '!' | '&' | ';' | '<' | '>' | '|'));
+    let needs_quotes = raw.chars().any(|c| {
+        matches!(
+            c,
+            ' ' | '"' | '\'' | '(' | ')' | '$' | '`' | '!' | '&' | ';' | '<' | '>' | '|'
+        )
+    });
     if !needs_quotes {
         raw.to_string()
     } else {
@@ -1735,7 +2224,8 @@ fn compute_sha256_hex(path: &Path) -> Result<String> {
     let mut hasher = Sha256::new();
     let mut buffer = [0u8; 8192];
     loop {
-        let read = file.read(&mut buffer)
+        let read = file
+            .read(&mut buffer)
             .with_context(|| format!("Failed to read {} while hashing", path.display()))?;
         if read == 0 {
             break;
@@ -1761,15 +2251,28 @@ fn path_to_tilde(path: &Path) -> Result<String> {
 
 fn handle_graph(action: GraphActions) -> Result<()> {
     match action {
-        GraphActions::Search { symbol, repo, format } => {
+        GraphActions::Search {
+            symbol,
+            repo,
+            format,
+        } => {
             let repo_path = repo.unwrap_or_else(|| ".".to_string());
             repo::graph_search(&repo_path, &symbol, &format)
         }
-        GraphActions::References { symbol, repo, format } => {
+        GraphActions::References {
+            symbol,
+            repo,
+            format,
+        } => {
             let repo_path = repo.unwrap_or_else(|| ".".to_string());
             repo::graph_references(&repo_path, &symbol, &format)
         }
-        GraphActions::Related { symbol, repo, depth, format } => {
+        GraphActions::Related {
+            symbol,
+            repo,
+            depth,
+            format,
+        } => {
             let repo_path = repo.unwrap_or_else(|| ".".to_string());
             repo::graph_related(&repo_path, &symbol, depth, &format)
         }
@@ -1924,23 +2427,22 @@ fn route_to_commander(commander: &str, args: &[&str]) -> Result<()> {
     // Use XDG Base Directory spec across all platforms
     let nabi_config = NabiPaths::config_dir()?;
 
-    let commander_path = nabi_config
-        .join("commanders")
-        .join(commander);
+    let commander_path = nabi_config.join("commanders").join(commander);
 
     // Check if a native Rust commander binary exists
     let commander_binary = commander_path.join(commander);
     if commander_binary.exists() {
         println!(
             "{}",
-            format!("→ Route to {} commander (native)", commander)
-                .dimmed()
+            format!("→ Route to {} commander (native)", commander).dimmed()
         );
 
         let mut cmd = process::Command::new(&commander_binary);
         cmd.args(args);
-        let status = cmd.status()
-            .context(format!("Failed to execute commander at {}", commander_binary.display()))?;
+        let status = cmd.status().context(format!(
+            "Failed to execute commander at {}",
+            commander_binary.display()
+        ))?;
 
         if !status.success() {
             process::exit(status.code().unwrap_or(1));
@@ -1952,8 +2454,7 @@ fn route_to_commander(commander: &str, args: &[&str]) -> Result<()> {
     // This enables gradual migration: Python → Rust
     println!(
         "{}",
-        format!("→ Route to Python CLI: {}", commander)
-            .dimmed()
+        format!("→ Route to Python CLI: {}", commander).dimmed()
     );
 
     let bin_dir = NabiPaths::bin_dir()?;
@@ -1963,8 +2464,10 @@ fn route_to_commander(commander: &str, args: &[&str]) -> Result<()> {
         let mut cmd = process::Command::new(&python_cli);
         cmd.arg(commander);
         cmd.args(args);
-        let status = cmd.status()
-            .context(format!("Failed to execute Python CLI at {}", python_cli.display()))?;
+        let status = cmd.status().context(format!(
+            "Failed to execute Python CLI at {}",
+            python_cli.display()
+        ))?;
 
         if !status.success() {
             process::exit(status.code().unwrap_or(1));
@@ -1973,11 +2476,17 @@ fn route_to_commander(commander: &str, args: &[&str]) -> Result<()> {
     } else {
         eprintln!(
             "{}",
-            format!("❌ Commander '{}' not found and no Python CLI fallback available", commander)
-                .red()
-                .bold()
+            format!(
+                "❌ Commander '{}' not found and no Python CLI fallback available",
+                commander
+            )
+            .red()
+            .bold()
         );
-        eprintln!("{}", format!("Expected Python CLI: {}", python_cli.display()).yellow());
+        eprintln!(
+            "{}",
+            format!("Expected Python CLI: {}", python_cli.display()).yellow()
+        );
         eprintln!("{}", "Run 'nabi self doctor' to diagnose issues.".yellow());
         process::exit(1);
     }
@@ -1986,9 +2495,7 @@ fn route_to_commander(commander: &str, args: &[&str]) -> Result<()> {
 fn check_commander(commander: &str) -> Result<()> {
     let nabi_config = NabiPaths::config_dir()?;
 
-    let commander_path = nabi_config
-        .join("commanders")
-        .join(commander);
+    let commander_path = nabi_config.join("commanders").join(commander);
 
     if commander_path.exists() {
         println!("  {} {} {}", "✓".green(), commander, "present".dimmed());
@@ -2015,8 +2522,11 @@ fn check_xdg_compliance() -> Result<()> {
     if config_venv.exists() {
         let config_venv_path = NabiPaths::config_dir()?.join(".venv");
         violations.push((
-            format!("Broken .venv in config directory: {}", config_venv.display()),
-            format!("rm -rf {}", config_venv_path.display())
+            format!(
+                "Broken .venv in config directory: {}",
+                config_venv.display()
+            ),
+            format!("rm -rf {}", config_venv_path.display()),
         ));
     }
 
@@ -2024,7 +2534,7 @@ fn check_xdg_compliance() -> Result<()> {
         let nabi_venv_path = NabiPaths::config_dir()?.join(".nabi").join(".venv");
         violations.push((
             format!("Broken .venv in nested config: {}", nabi_venv.display()),
-            format!("rm -rf {}", nabi_venv_path.display())
+            format!("rm -rf {}", nabi_venv_path.display()),
         ));
     }
 
@@ -2034,7 +2544,7 @@ fn check_xdg_compliance() -> Result<()> {
     if !venv_base.exists() {
         violations.push((
             format!("Venv directory missing: {}", venv_base.display()),
-            format!("mkdir -p {}", venv_base.display())
+            format!("mkdir -p {}", venv_base.display()),
         ));
     }
 
@@ -2046,12 +2556,19 @@ fn check_xdg_compliance() -> Result<()> {
                 if let Ok(content) = std::fs::read_to_string(&path) {
                     // Look for hardcoded paths starting with /Users/ or /home/
                     for (line_num, line) in content.lines().enumerate() {
-                        if line.contains("/Users/") || (line.contains("/home/") && !line.contains("${")) {
+                        if line.contains("/Users/")
+                            || (line.contains("/home/") && !line.contains("${"))
+                        {
                             // Allow comments and specific patterns
                             if !line.trim().starts_with("#") {
                                 violations.push((
-                                    format!("Hardcoded path in {}: line {}", path.display(), line_num + 1),
-                                    "Replace absolute paths with ~ or ${XDG_*} variables".to_string()
+                                    format!(
+                                        "Hardcoded path in {}: line {}",
+                                        path.display(),
+                                        line_num + 1
+                                    ),
+                                    "Replace absolute paths with ~ or ${XDG_*} variables"
+                                        .to_string(),
                                 ));
                             }
                         }
@@ -2077,18 +2594,10 @@ fn check_xdg_compliance() -> Result<()> {
 
 fn handle_forge(command: ForgeCommands) -> Result<()> {
     match command {
-        ForgeCommands::Enable { feature } => {
-            forge::handle_enable(feature)
-        }
-        ForgeCommands::Disable { feature } => {
-            forge::handle_disable(feature)
-        }
-        ForgeCommands::Status => {
-            forge::handle_status()
-        }
-        ForgeCommands::List => {
-            forge::handle_list()
-        }
+        ForgeCommands::Enable { feature } => forge::handle_enable(feature),
+        ForgeCommands::Disable { feature } => forge::handle_disable(feature),
+        ForgeCommands::Status => forge::handle_status(),
+        ForgeCommands::List => forge::handle_list(),
     }
 }
 
@@ -2146,7 +2655,10 @@ fn handle_configure(command: ConfigureCommands) -> Result<()> {
             route_to_python_cli(&["configure", "show"])
         }
         ConfigureCommands::Set { key, value } => {
-            println!("{}", format!("✏️  Setting {} = {}...", key, value).cyan().bold());
+            println!(
+                "{}",
+                format!("✏️  Setting {} = {}...", key, value).cyan().bold()
+            );
             route_to_python_cli(&["configure", "set", &key, &value])
         }
         ConfigureCommands::Reset => {
@@ -2163,11 +2675,21 @@ fn handle_db(command: DbCommands) -> Result<()> {
             route_to_python_cli(&["db", "init"])
         }
         DbCommands::Export { path } => {
-            println!("{}", format!("💾 Exporting database to {}...", path).blue().bold());
+            println!(
+                "{}",
+                format!("💾 Exporting database to {}...", path)
+                    .blue()
+                    .bold()
+            );
             route_to_python_cli(&["db", "export", &path])
         }
         DbCommands::Import { path } => {
-            println!("{}", format!("📥 Importing database from {}...", path).blue().bold());
+            println!(
+                "{}",
+                format!("📥 Importing database from {}...", path)
+                    .blue()
+                    .bold()
+            );
             route_to_python_cli(&["db", "import", &path])
         }
     }
@@ -2215,7 +2737,10 @@ fn handle_record(command: RecordCommands) -> Result<()> {
                 route_to_commander("record", &["config", "show"])
             }
             ConfigActions::Set { key, value } => {
-                println!("{}", format!("✏️  Setting {} = {}...", key, value).cyan().bold());
+                println!(
+                    "{}",
+                    format!("✏️  Setting {} = {}...", key, value).cyan().bold()
+                );
                 route_to_commander("record", &["config", "set", &key, &value])
             }
         },
@@ -2260,15 +2785,18 @@ fn load_kernel_config() -> Result<KernelConfig> {
 
     if !config_path.exists() {
         eprintln!("{}", "❌ Kernel configuration not found".red().bold());
-        eprintln!("{}", format!("Expected at: {}", config_path.display()).yellow());
+        eprintln!(
+            "{}",
+            format!("Expected at: {}", config_path.display()).yellow()
+        );
         anyhow::bail!("Missing kernel.json configuration");
     }
 
-    let json_content = std::fs::read_to_string(&config_path)
-        .context("Failed to read kernel.json")?;
+    let json_content =
+        std::fs::read_to_string(&config_path).context("Failed to read kernel.json")?;
 
-    let config: KernelConfig = serde_json::from_str(&json_content)
-        .context("Failed to parse kernel.json")?;
+    let config: KernelConfig =
+        serde_json::from_str(&json_content).context("Failed to parse kernel.json")?;
 
     Ok(config)
 }
@@ -2282,25 +2810,35 @@ fn handle_agent(command: AgentKernelCommands) -> Result<()> {
     let python_exe = kernel_venv.join("bin").join("python3");
 
     if !python_exe.exists() {
-        eprintln!("{}", "❌ Python executable not found in kernel venv".red().bold());
-        eprintln!("{}", format!("Expected at: {}", python_exe.display()).yellow());
+        eprintln!(
+            "{}",
+            "❌ Python executable not found in kernel venv".red().bold()
+        );
+        eprintln!(
+            "{}",
+            format!("Expected at: {}", python_exe.display()).yellow()
+        );
         let kernel_config_path = NabiPaths::config_dir()?.join("commanders/kernel.json");
-        eprintln!("{}", format!("   Configured in: {}", kernel_config_path.display()).yellow());
+        eprintln!(
+            "{}",
+            format!("   Configured in: {}", kernel_config_path.display()).yellow()
+        );
         eprintln!("{}", "   Try: nabi self doctor".yellow());
         process::exit(1);
     }
 
     // Get agent commander path
-    let nabi_config = NabiPaths::config_dir()?
-        .join("commanders")
-        .join("agent");
+    let nabi_config = NabiPaths::config_dir()?.join("commanders").join("agent");
 
     match command {
         AgentKernelCommands::Daemon { action } => {
             let daemon_script = nabi_config.join("daemon");
             if !daemon_script.exists() {
                 eprintln!("{}", "❌ Agent daemon script not found".red().bold());
-                eprintln!("{}", format!("Expected at: {}", daemon_script.display()).yellow());
+                eprintln!(
+                    "{}",
+                    format!("Expected at: {}", daemon_script.display()).yellow()
+                );
                 process::exit(1);
             }
 
@@ -2313,8 +2851,10 @@ fn handle_agent(command: AgentKernelCommands) -> Result<()> {
                     if foreground {
                         cmd.arg("--foreground");
                     }
-                    let status = cmd.status()
-                        .context(format!("Failed to execute daemon script at {}", daemon_script.display()))?;
+                    let status = cmd.status().context(format!(
+                        "Failed to execute daemon script at {}",
+                        daemon_script.display()
+                    ))?;
                     if !status.success() {
                         process::exit(status.code().unwrap_or(1));
                     }
@@ -2324,8 +2864,10 @@ fn handle_agent(command: AgentKernelCommands) -> Result<()> {
                     println!("{}", "⏹️  Stopping NABIKernel daemon...".yellow().bold());
                     let mut cmd = process::Command::new(&python_exe);
                     cmd.arg(&daemon_script).arg("stop");
-                    let status = cmd.status()
-                        .context(format!("Failed to execute daemon script at {}", daemon_script.display()))?;
+                    let status = cmd.status().context(format!(
+                        "Failed to execute daemon script at {}",
+                        daemon_script.display()
+                    ))?;
                     if !status.success() {
                         process::exit(status.code().unwrap_or(1));
                     }
@@ -2335,19 +2877,26 @@ fn handle_agent(command: AgentKernelCommands) -> Result<()> {
                     println!("{}", "🔄 Restarting NABIKernel daemon...".cyan().bold());
                     let mut cmd = process::Command::new(&python_exe);
                     cmd.arg(&daemon_script).arg("restart");
-                    let status = cmd.status()
-                        .context(format!("Failed to execute daemon script at {}", daemon_script.display()))?;
+                    let status = cmd.status().context(format!(
+                        "Failed to execute daemon script at {}",
+                        daemon_script.display()
+                    ))?;
                     if !status.success() {
                         process::exit(status.code().unwrap_or(1));
                     }
                     Ok(())
                 }
                 DaemonActions::Status => {
-                    println!("{}", "📊 Checking NABIKernel daemon status...".cyan().bold());
+                    println!(
+                        "{}",
+                        "📊 Checking NABIKernel daemon status...".cyan().bold()
+                    );
                     let mut cmd = process::Command::new(&python_exe);
                     cmd.arg(&daemon_script).arg("status");
-                    let status = cmd.status()
-                        .context(format!("Failed to execute daemon script at {}", daemon_script.display()))?;
+                    let status = cmd.status().context(format!(
+                        "Failed to execute daemon script at {}",
+                        daemon_script.display()
+                    ))?;
                     if !status.success() {
                         process::exit(status.code().unwrap_or(1));
                     }
@@ -2355,8 +2904,17 @@ fn handle_agent(command: AgentKernelCommands) -> Result<()> {
                 }
             }
         }
-        AgentKernelCommands::Spawn { agent_type, task, priority } => {
-            println!("{}", format!("🤖 Spawning {} agent...", agent_type).magenta().bold());
+        AgentKernelCommands::Spawn {
+            agent_type,
+            task,
+            priority,
+        } => {
+            println!(
+                "{}",
+                format!("🤖 Spawning {} agent...", agent_type)
+                    .magenta()
+                    .bold()
+            );
             let spawn_script = nabi_config.join("spawn");
             let mut cmd = process::Command::new(&python_exe);
             cmd.arg(&spawn_script);
@@ -2365,20 +2923,29 @@ fn handle_agent(command: AgentKernelCommands) -> Result<()> {
             if let Some(t) = task {
                 cmd.arg("--task").arg(&t);
             }
-            let status = cmd.status()
-                .context(format!("Failed to execute spawn script at {}", spawn_script.display()))?;
+            let status = cmd.status().context(format!(
+                "Failed to execute spawn script at {}",
+                spawn_script.display()
+            ))?;
             if !status.success() {
                 process::exit(status.code().unwrap_or(1));
             }
             Ok(())
         }
         AgentKernelCommands::Status { agent_id } => {
-            println!("{}", format!("📊 Checking status for {}...", agent_id).cyan().bold());
+            println!(
+                "{}",
+                format!("📊 Checking status for {}...", agent_id)
+                    .cyan()
+                    .bold()
+            );
             let status_script = nabi_config.join("status");
             let mut cmd = process::Command::new(&python_exe);
             cmd.arg(&status_script).arg(&agent_id);
-            let status = cmd.status()
-                .context(format!("Failed to execute status script at {}", status_script.display()))?;
+            let status = cmd.status().context(format!(
+                "Failed to execute status script at {}",
+                status_script.display()
+            ))?;
             if !status.success() {
                 process::exit(status.code().unwrap_or(1));
             }
@@ -2389,32 +2956,46 @@ fn handle_agent(command: AgentKernelCommands) -> Result<()> {
             let list_script = nabi_config.join("list");
             let mut cmd = process::Command::new(&python_exe);
             cmd.arg(&list_script);
-            let status = cmd.status()
-                .context(format!("Failed to execute list script at {}", list_script.display()))?;
+            let status = cmd.status().context(format!(
+                "Failed to execute list script at {}",
+                list_script.display()
+            ))?;
             if !status.success() {
                 process::exit(status.code().unwrap_or(1));
             }
             Ok(())
         }
         AgentKernelCommands::Kill { agent_id } => {
-            println!("{}", format!("⚔️  Killing agent {}...", agent_id).red().bold());
+            println!(
+                "{}",
+                format!("⚔️  Killing agent {}...", agent_id).red().bold()
+            );
             let kill_script = nabi_config.join("kill");
             let mut cmd = process::Command::new(&python_exe);
             cmd.arg(&kill_script).arg(&agent_id);
-            let status = cmd.status()
-                .context(format!("Failed to execute kill script at {}", kill_script.display()))?;
+            let status = cmd.status().context(format!(
+                "Failed to execute kill script at {}",
+                kill_script.display()
+            ))?;
             if !status.success() {
                 process::exit(status.code().unwrap_or(1));
             }
             Ok(())
         }
         AgentKernelCommands::Wait { agent_id } => {
-            println!("{}", format!("⏳ Waiting for agent {}...", agent_id).yellow().bold());
+            println!(
+                "{}",
+                format!("⏳ Waiting for agent {}...", agent_id)
+                    .yellow()
+                    .bold()
+            );
             let wait_script = nabi_config.join("wait");
             let mut cmd = process::Command::new(&python_exe);
             cmd.arg(&wait_script).arg(&agent_id);
-            let status = cmd.status()
-                .context(format!("Failed to execute wait script at {}", wait_script.display()))?;
+            let status = cmd.status().context(format!(
+                "Failed to execute wait script at {}",
+                wait_script.display()
+            ))?;
             if !status.success() {
                 process::exit(status.code().unwrap_or(1));
             }
@@ -2434,11 +3015,27 @@ fn handle_port(command: PortCommands) -> Result<()> {
             port::cmd_check()
         }
         PortCommands::CrossPlatform => {
-            println!("{}", "🌐 Checking cross-platform conflicts...".cyan().bold());
+            println!(
+                "{}",
+                "🌐 Checking cross-platform conflicts...".cyan().bold()
+            );
             port::cmd_cross_platform()
         }
-        PortCommands::Shift { service, old_port, new_port, dry_run } => {
-            println!("{}", format!("🔄 Migrating {} from {} to {}...", service, old_port, new_port).yellow().bold());
+        PortCommands::Shift {
+            service,
+            old_port,
+            new_port,
+            dry_run,
+        } => {
+            println!(
+                "{}",
+                format!(
+                    "🔄 Migrating {} from {} to {}...",
+                    service, old_port, new_port
+                )
+                .yellow()
+                .bold()
+            );
             port::cmd_shift(&service, old_port, new_port, dry_run)
         }
         PortCommands::Drift { forensic, since } => {
@@ -2461,7 +3058,12 @@ fn handle_hooks(command: HooksCommands) -> Result<()> {
         HooksCommands::Debug { action } => handle_hook_debug(action),
         HooksCommands::Transform { stable } => {
             if stable {
-                println!("{}", "🔗 Using stable hooks from ~/.nabi/src/hooks...".cyan().bold());
+                println!(
+                    "{}",
+                    "🔗 Using stable hooks from ~/.nabi/src/hooks..."
+                        .cyan()
+                        .bold()
+                );
 
                 // Use stable hooks: copy from ~/.nabi/src/hooks/src/ to deployment location
                 let home = dirs::home_dir()
@@ -2470,15 +3072,20 @@ fn handle_hooks(command: HooksCommands) -> Result<()> {
                 let hooks_deploy = NabiPaths::data_dir()?.join("bin").join("hooks");
 
                 // Ensure deployment directory exists
-                fs::create_dir_all(&hooks_deploy)
-                    .context(format!("Failed to create hooks directory at {}", hooks_deploy.display()))?;
+                fs::create_dir_all(&hooks_deploy).context(format!(
+                    "Failed to create hooks directory at {}",
+                    hooks_deploy.display()
+                ))?;
 
                 if !stable_hooks_src.exists() {
                     eprintln!(
                         "{}",
-                        format!("❌ Stable hooks not found at: {}", stable_hooks_src.display())
-                            .red()
-                            .bold()
+                        format!(
+                            "❌ Stable hooks not found at: {}",
+                            stable_hooks_src.display()
+                        )
+                        .red()
+                        .bold()
                     );
                     eprintln!(
                         "{}",
@@ -2488,7 +3095,8 @@ fn handle_hooks(command: HooksCommands) -> Result<()> {
                 }
 
                 // Generate hook_wrapper.sh first (required for hook execution)
-                let hook_wrapper_script = stable_hooks_src.parent()
+                let hook_wrapper_script = stable_hooks_src
+                    .parent()
                     .and_then(|p| p.parent())
                     .map(|p| p.join("src").join("transform_hook_wrapper.py"))
                     .ok_or_else(|| anyhow::anyhow!("Could not resolve transform script path"))?;
@@ -2537,8 +3145,11 @@ fn handle_hooks(command: HooksCommands) -> Result<()> {
                         if path.extension().map_or(false, |e| e == "py") && path.is_file() {
                             let filename = path.file_name().unwrap();
                             let dest = hooks_deploy.join(filename);
-                            fs::copy(&path, &dest)
-                                .context(format!("Failed to copy {} to {}", path.display(), dest.display()))?;
+                            fs::copy(&path, &dest).context(format!(
+                                "Failed to copy {} to {}",
+                                path.display(),
+                                dest.display()
+                            ))?;
                             copied += 1;
                         }
                     }
@@ -2546,11 +3157,21 @@ fn handle_hooks(command: HooksCommands) -> Result<()> {
 
                 println!(
                     "{}",
-                    format!("✓ Copied {} hook files to {}", copied, hooks_deploy.display()).green()
+                    format!(
+                        "✓ Copied {} hook files to {}",
+                        copied,
+                        hooks_deploy.display()
+                    )
+                    .green()
                 );
                 Ok(())
             } else {
-                println!("{}", "🔄 Transforming hooks from schema to derived state...".cyan().bold());
+                println!(
+                    "{}",
+                    "🔄 Transforming hooks from schema to derived state..."
+                        .cyan()
+                        .bold()
+                );
 
                 // Run transformation scripts
                 let home = dirs::home_dir()
@@ -2575,19 +3196,22 @@ fn handle_hooks(command: HooksCommands) -> Result<()> {
                             .ok()
                             .map(|_| PathBuf::from("python"))
                     })
-                    .ok_or_else(|| anyhow::anyhow!("Python not found. Set NABI_PYTHON or ensure python3/python is in PATH"))?;
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "Python not found. Set NABI_PYTHON or ensure python3/python is in PATH"
+                        )
+                    })?;
 
                 // Generate hook_wrapper.sh first (required for hook execution)
                 let hooks_deploy = NabiPaths::data_dir()?.join("bin").join("hooks");
-                fs::create_dir_all(&hooks_deploy)
-                    .context(format!("Failed to create hooks directory at {}", hooks_deploy.display()))?;
+                fs::create_dir_all(&hooks_deploy).context(format!(
+                    "Failed to create hooks directory at {}",
+                    hooks_deploy.display()
+                ))?;
 
                 let hook_wrapper_script = transform_scripts_dir.join("transform_hook_wrapper.py");
                 if hook_wrapper_script.exists() {
-                    println!(
-                        "{}",
-                        "  Generating hook_wrapper.sh...".dimmed()
-                    );
+                    println!("{}", "  Generating hook_wrapper.sh...".dimmed());
 
                     let status = process::Command::new(&python_exe)
                         .arg(&hook_wrapper_script)
@@ -2597,18 +3221,18 @@ fn handle_hooks(command: HooksCommands) -> Result<()> {
                         .context(format!("Failed to generate hook_wrapper.sh"))?;
 
                     if !status.success() {
-                        eprintln!(
-                            "{}",
-                            "❌ Failed to generate hook_wrapper.sh".red().bold()
-                        );
+                        eprintln!("{}", "❌ Failed to generate hook_wrapper.sh".red().bold());
                         process::exit(status.code().unwrap_or(1));
                     }
                 } else {
                     eprintln!(
                         "{}",
-                        format!("⚠️  hook_wrapper.sh generator not found: {}", hook_wrapper_script.display())
-                            .yellow()
-                            .bold()
+                        format!(
+                            "⚠️  hook_wrapper.sh generator not found: {}",
+                            hook_wrapper_script.display()
+                        )
+                        .yellow()
+                        .bold()
                     );
                 }
 
@@ -2618,25 +3242,36 @@ fn handle_hooks(command: HooksCommands) -> Result<()> {
                     for entry in entries.flatten() {
                         let path = entry.path();
                         if path.is_file()
-                            && path.file_name()
+                            && path
+                                .file_name()
                                 .and_then(|n| n.to_str())
-                                .map_or(false, |n| n.starts_with("transform_") && n.ends_with(".py"))
+                                .map_or(false, |n| {
+                                    n.starts_with("transform_") && n.ends_with(".py")
+                                })
                         {
                             // Skip hook_wrapper transform (already done above)
-                            if path.file_name().and_then(|n| n.to_str()) == Some("transform_hook_wrapper.py") {
+                            if path.file_name().and_then(|n| n.to_str())
+                                == Some("transform_hook_wrapper.py")
+                            {
                                 continue;
                             }
 
                             println!(
                                 "{}",
-                                format!("  Running {}...", path.file_name().unwrap().to_string_lossy())
-                                    .dimmed()
+                                format!(
+                                    "  Running {}...",
+                                    path.file_name().unwrap().to_string_lossy()
+                                )
+                                .dimmed()
                             );
 
                             let status = process::Command::new(&python_exe)
                                 .arg(&path)
                                 .status()
-                                .context(format!("Failed to execute transform script: {}", path.display()))?;
+                                .context(format!(
+                                    "Failed to execute transform script: {}",
+                                    path.display()
+                                ))?;
 
                             if !status.success() {
                                 eprintln!(
@@ -2656,9 +3291,12 @@ fn handle_hooks(command: HooksCommands) -> Result<()> {
                 if executed == 0 {
                     eprintln!(
                         "{}",
-                        format!("⚠️  No transformation scripts found at: {}", transform_scripts_dir.display())
-                            .yellow()
-                            .bold()
+                        format!(
+                            "⚠️  No transformation scripts found at: {}",
+                            transform_scripts_dir.display()
+                        )
+                        .yellow()
+                        .bold()
                     );
                     eprintln!(
                         "{}",
@@ -2673,6 +3311,26 @@ fn handle_hooks(command: HooksCommands) -> Result<()> {
 
                 Ok(())
             }
+        }
+    }
+}
+
+fn handle_deckgen(command: DeckgenCommands) -> Result<()> {
+    match command {
+        DeckgenCommands::Trace { output } => {
+            let trace = deckgen::TRACE_SAMPLE.trim_end();
+            if let Some(path) = output {
+                fs::write(&path, trace)?;
+                println!(
+                    "{}",
+                    format!("📝 Wrote deck trace to {}", path.display())
+                        .green()
+                        .bold()
+                );
+            } else {
+                println!("{}", trace);
+            }
+            Ok(())
         }
     }
 }
@@ -2714,7 +3372,8 @@ fn handle_hook_debug(action: HookDebugActions) -> Result<()> {
             // Use tail -f to follow the file
             let mut cmd = process::Command::new("tail");
             cmd.arg("-f").arg(&log_file);
-            let status = cmd.status()
+            let status = cmd
+                .status()
                 .context(format!("Failed to tail log file: {}", log_file.display()))?;
 
             if !status.success() {
@@ -2732,9 +3391,7 @@ fn handle_hook_debug(action: HookDebugActions) -> Result<()> {
 
             let mut log_files: Vec<_> = fs::read_dir(&debug_dir)?
                 .filter_map(|entry| entry.ok())
-                .filter(|entry| {
-                    entry.path().extension().and_then(|e| e.to_str()) == Some("jsonl")
-                })
+                .filter(|entry| entry.path().extension().and_then(|e| e.to_str()) == Some("jsonl"))
                 .collect();
 
             log_files.sort_by_key(|e| {
@@ -2760,11 +3417,10 @@ fn handle_hook_debug(action: HookDebugActions) -> Result<()> {
                     format!("{}MB", size / (1024 * 1024))
                 };
 
-                let modified_str = chrono::DateTime::<chrono::Local>::from(
-                    std::time::UNIX_EPOCH + modified
-                )
-                .format("%Y-%m-%d %H:%M:%S")
-                .to_string();
+                let modified_str =
+                    chrono::DateTime::<chrono::Local>::from(std::time::UNIX_EPOCH + modified)
+                        .format("%Y-%m-%d %H:%M:%S")
+                        .to_string();
 
                 println!(
                     "  {} - {} - {}",
@@ -2797,7 +3453,8 @@ fn handle_hook_debug(action: HookDebugActions) -> Result<()> {
                 if line.to_lowercase().contains(&term.to_lowercase()) {
                     // Try to parse as JSON and extract key fields
                     if let Ok(json) = serde_json::from_str::<serde_json::Value>(line) {
-                        let timestamp = json.get("timestamp").and_then(|v| v.as_str()).unwrap_or("");
+                        let timestamp =
+                            json.get("timestamp").and_then(|v| v.as_str()).unwrap_or("");
                         let level = json.get("level").and_then(|v| v.as_str()).unwrap_or("");
                         let message = json.get("message").and_then(|v| v.as_str()).unwrap_or("");
                         println!("  [{}] {}: {}", timestamp, level, message);
@@ -2818,16 +3475,14 @@ fn handle_hook_debug(action: HookDebugActions) -> Result<()> {
                 process::exit(1);
             }
 
-            println!(
-                "{}",
-                format!("❌ Errors for {}:", hook_name).red().bold()
-            );
+            println!("{}", format!("❌ Errors for {}:", hook_name).red().bold());
 
             let content = fs::read_to_string(&log_file)?;
             for line in content.lines() {
                 if line.contains("\"level\":\"error\"") {
                     if let Ok(json) = serde_json::from_str::<serde_json::Value>(line) {
-                        let timestamp = json.get("timestamp").and_then(|v| v.as_str()).unwrap_or("");
+                        let timestamp =
+                            json.get("timestamp").and_then(|v| v.as_str()).unwrap_or("");
                         let message = json.get("message").and_then(|v| v.as_str()).unwrap_or("");
                         let exception = json
                             .get("data")
@@ -3004,8 +3659,10 @@ fn handle_mode(mode: Option<String>) -> Result<()> {
         cmd.arg(m);
     }
 
-    let status = cmd.status()
-        .context(format!("Failed to execute bash CLI at {}", bash_cli.display()))?;
+    let status = cmd.status().context(format!(
+        "Failed to execute bash CLI at {}",
+        bash_cli.display()
+    ))?;
 
     if !status.success() {
         process::exit(status.code().unwrap_or(1));
@@ -3016,10 +3673,7 @@ fn handle_mode(mode: Option<String>) -> Result<()> {
 fn handle_riff(args: Vec<String>) -> Result<()> {
     // Layer 1 → Layer 2 handoff for riff-cli
     // Route all riff commands to Python CLI layer
-    println!(
-        "{}",
-        "🔍 Routing to riff-cli...".cyan().bold()
-    );
+    println!("{}", "🔍 Routing to riff-cli...".cyan().bold());
 
     let mut python_args = vec!["riff"];
     let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
@@ -3030,10 +3684,16 @@ fn handle_riff(args: Vec<String>) -> Result<()> {
 
 fn handle_recover(command: RecoverCommands) -> Result<()> {
     match command {
-        RecoverCommands::Sessions { hours, detailed, export } => {
+        RecoverCommands::Sessions {
+            hours,
+            detailed,
+            export,
+        } => {
             println!(
                 "{}",
-                format!("🔄 Recovering sessions from last {} hours...", hours).cyan().bold()
+                format!("🔄 Recovering sessions from last {} hours...", hours)
+                    .cyan()
+                    .bold()
             );
 
             let hours_str = hours.to_string();
@@ -3058,8 +3718,16 @@ fn handle_recover(command: RecoverCommands) -> Result<()> {
 
 fn handle_health(command: HealthCommands) -> Result<()> {
     match command {
-        HealthCommands::Check { auto_remediate, fsm_only } => {
-            println!("{}", "🏥 Running federation substrate health checks...".green().bold());
+        HealthCommands::Check {
+            auto_remediate,
+            fsm_only,
+        } => {
+            println!(
+                "{}",
+                "🏥 Running federation substrate health checks..."
+                    .green()
+                    .bold()
+            );
 
             let mut args = vec!["health", "check"];
 
@@ -3086,7 +3754,12 @@ fn handle_health(command: HealthCommands) -> Result<()> {
             route_to_python_cli(&args)
         }
         HealthCommands::Report { format, output } => {
-            println!("{}", format!("📋 Generating health report ({} format)...", format).cyan().bold());
+            println!(
+                "{}",
+                format!("📋 Generating health report ({} format)...", format)
+                    .cyan()
+                    .bold()
+            );
 
             let mut args = vec!["health", "report", "--format", &format];
 
@@ -3098,7 +3771,15 @@ fn handle_health(command: HealthCommands) -> Result<()> {
             route_to_python_cli(&args)
         }
         HealthCommands::Dashboard { port } => {
-            println!("{}", format!("📈 Opening Grafana dashboard at http://localhost:{}...", port).blue().bold());
+            println!(
+                "{}",
+                format!(
+                    "📈 Opening Grafana dashboard at http://localhost:{}...",
+                    port
+                )
+                .blue()
+                .bold()
+            );
 
             let port_str = port.to_string();
             route_to_python_cli(&["health", "dashboard", "--port", &port_str])
@@ -3114,8 +3795,10 @@ fn route_to_python_cli(args: &[&str]) -> Result<()> {
     if python_cli.exists() {
         let mut cmd = process::Command::new(&python_cli);
         cmd.args(args);
-        let status = cmd.status()
-            .context(format!("Failed to execute Python CLI at {}", python_cli.display()))?;
+        let status = cmd.status().context(format!(
+            "Failed to execute Python CLI at {}",
+            python_cli.display()
+        ))?;
 
         if !status.success() {
             process::exit(status.code().unwrap_or(1));
@@ -3133,7 +3816,11 @@ fn route_to_python_cli(args: &[&str]) -> Result<()> {
     }
 }
 
-fn list_tools(format: &str, status_filter: Option<&str>, runtime_filter: Option<&str>) -> Result<()> {
+fn list_tools(
+    format: &str,
+    status_filter: Option<&str>,
+    runtime_filter: Option<&str>,
+) -> Result<()> {
     println!("{}", "📋 Listing registered tools...".cyan().bold());
 
     let tools_dir = NabiPaths::config_dir()?.join("tools");
@@ -3220,7 +3907,15 @@ fn list_tools(format: &str, status_filter: Option<&str>, runtime_filter: Option<
                     }
                 }
 
-                tools.push((id, name, version, description, tool_status, runtime, commands));
+                tools.push((
+                    id,
+                    name,
+                    version,
+                    description,
+                    tool_status,
+                    runtime,
+                    commands,
+                ));
             }
         }
     }
@@ -3236,7 +3931,9 @@ fn list_tools(format: &str, status_filter: Option<&str>, runtime_filter: Option<
     Ok(())
 }
 
-fn output_tools_text(tools: &[(String, String, String, String, String, String, String)]) -> Result<()> {
+fn output_tools_text(
+    tools: &[(String, String, String, String, String, String, String)],
+) -> Result<()> {
     if tools.is_empty() {
         println!("{}", "  No tools found matching the criteria".dimmed());
         return Ok(());
@@ -3250,10 +3947,7 @@ fn output_tools_text(tools: &[(String, String, String, String, String, String, S
         "Status".bold(),
         "Commands"
     );
-    println!(
-        "  {}",
-        "─".repeat(80).dimmed()
-    );
+    println!("  {}", "─".repeat(80).dimmed());
 
     for (_id, name, version, _description, status, runtime, commands) in tools {
         let status_colored = match status.as_str() {
@@ -3278,20 +3972,24 @@ fn output_tools_text(tools: &[(String, String, String, String, String, String, S
     Ok(())
 }
 
-fn output_tools_json(tools: &[(String, String, String, String, String, String, String)]) -> Result<()> {
+fn output_tools_json(
+    tools: &[(String, String, String, String, String, String, String)],
+) -> Result<()> {
     let json_tools: Vec<serde_json::Value> = tools
         .iter()
-        .map(|(id, name, version, description, status, runtime, commands)| {
-            serde_json::json!({
-                "id": id,
-                "name": name,
-                "version": version,
-                "description": description,
-                "status": status,
-                "runtime": runtime,
-                "commands": commands.split(", ").collect::<Vec<_>>(),
-            })
-        })
+        .map(
+            |(id, name, version, description, status, runtime, commands)| {
+                serde_json::json!({
+                    "id": id,
+                    "name": name,
+                    "version": version,
+                    "description": description,
+                    "status": status,
+                    "runtime": runtime,
+                    "commands": commands.split(", ").collect::<Vec<_>>(),
+                })
+            },
+        )
         .collect();
 
     let output = serde_json::json!({
