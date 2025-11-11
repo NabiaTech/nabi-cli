@@ -1,8 +1,9 @@
 #compdef nabi
-# Dynamic Tmux Completion Enhancement for nabi
+# Dynamic Completion Enhancement for nabi
 #
-# This file adds runtime-aware completion to nabi CLI by querying tmux and nabi itself.
+# This file adds runtime-aware completion to nabi CLI by querying external sources.
 # It's loaded after the base _nabi completion to provide:
+# - Service names for `nabi port shift` from the port registry
 # - Session names for `nabi tmux send-prompt` and `nabi tmux list windows/panes`
 # - Window lists for context-aware selection
 # - Pane targets in full session:window.pane format
@@ -12,6 +13,10 @@
 
 # XDG-compliant cache directory (matches Rust codebase)
 _NABI_CACHE_DIR="${XDG_CACHE_HOME:-${HOME}/.cache}/nabi"
+_NABI_STATE_DIR="${XDG_STATE_HOME:-${HOME}/.local/state}/nabi"
+
+# Port registry location
+_NABI_PORT_REGISTRY="${_NABI_STATE_DIR}/governance/port-registry.json"
 
 # Debug log file (set _NABI_DEBUG=1 to enable)
 _NABI_COMPLETION_DEBUG_LOG="${_NABI_CACHE_DIR}/completion-debug.log"
@@ -40,6 +45,16 @@ if (( $+functions[_nabi] )); then
     # Override _nabi to replace :pane: with our completion function
     _nabi() {
         _nabi_debug_log "_nabi called: context=$curcontext, CURRENT=$CURRENT, words=${words[@]}"
+
+        # Check if we're completing service argument for port shift
+        if [[ "${words[1]}" == "nabi" ]] && \
+           [[ "${words[2]}" == "port" ]] && \
+           [[ "${words[3]}" == "shift" ]] && \
+           [[ $CURRENT -eq 4 ]]; then
+            _nabi_debug_log "Detected port shift service completion, calling our function"
+            _nabi_port_shift_service
+            return 0
+        fi
 
         # Check if we're completing pane argument for send-prompt
         if [[ "${words[1]}" == "nabi" ]] && \
@@ -205,5 +220,48 @@ _nabi_tmux_list_panes_window() {
     _describe 'window' windows
 }
 
+# Helper function to get services from port registry
+_nabi_get_port_services() {
+    local -a services
+
+    if [[ ! -f "$_NABI_PORT_REGISTRY" ]]; then
+        _nabi_debug_log "Port registry not found at $_NABI_PORT_REGISTRY"
+        return 1
+    fi
+
+    # Extract service names from standard_allocations and platform_configs
+    # Using jq if available, fallback to grep/sed if not
+    if command -v jq &> /dev/null; then
+        services=($(jq -r '.standard_allocations | keys[]' "$_NABI_PORT_REGISTRY" 2>/dev/null))
+    else
+        # Fallback: simple pattern matching (less robust but works)
+        services=($(grep -o '"[a-z0-9_-]*":[[:space:]]*{' "$_NABI_PORT_REGISTRY" | sed 's/"//g' | sed 's/://' | sort -u))
+    fi
+
+    if (( ${#services} == 0 )); then
+        _nabi_debug_log "No services found in port registry"
+        return 1
+    fi
+
+    _nabi_debug_log "Found ${#services} services: ${services[@]}"
+    echo "${services[@]}"
+}
+
+# Completion for: nabi port shift <SERVICE>
+_nabi_port_shift_service() {
+    _nabi_debug_log "_nabi_port_shift_service called"
+    local -a services
+
+    services=($(_nabi_get_port_services))
+
+    if (( ${#services} == 0 )); then
+        _message "No services found in port registry"
+        return 1
+    fi
+
+    _nabi_debug_log "Using ${#services} services for completion"
+    _describe 'service' services
+}
+
 # Note: We don't override _default anymore since we handle everything in _nabi() override
-# The _nabi() override catches the pane argument completion before _default is called
+# The _nabi() override catches the service and pane argument completion before _default is called
