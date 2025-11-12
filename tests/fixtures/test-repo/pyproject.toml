@@ -1,0 +1,8 @@
+[project]
+name = "test-repo"
+version = "0.1.0"
+description = "Test repository for regression testing"
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"

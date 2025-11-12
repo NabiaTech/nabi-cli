@@ -30,9 +30,15 @@ mod tests {
             let stdout = String::from_utf8_lossy(&output.stdout);
 
             // Check for major command categories
-            assert!(stdout.contains("claude"), "Help should include claude command");
+            assert!(
+                stdout.contains("claude"),
+                "Help should include claude command"
+            );
             assert!(stdout.contains("data"), "Help should include data command");
-            assert!(stdout.contains("federation"), "Help should include federation command");
+            assert!(
+                stdout.contains("federation"),
+                "Help should include federation command"
+            );
             assert!(stdout.contains("port"), "Help should include port command");
             assert!(stdout.contains("tmux"), "Help should include tmux command");
         } else {

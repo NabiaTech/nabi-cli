@@ -344,6 +344,39 @@ test_port_unit_tests() {
     fi
 }
 
+test_analyze_regression() {
+    log_section "Analyze Repo - Regression Tests"
+
+    local analyze_test_script="$SCRIPT_DIR/analyze_regression.sh"
+
+    if [[ ! -f "$analyze_test_script" ]]; then
+        log_warn "Analyze regression test script not found: $analyze_test_script"
+        return 0
+    fi
+
+    if [[ ! -x "$analyze_test_script" ]]; then
+        log_warn "Analyze regression test script not executable"
+        return 0
+    fi
+
+    log_test "Running analyze repo regression tests"
+
+    # Run analyze regression tests with same verbosity
+    local analyze_args=""
+    [[ $VERBOSE -eq 1 ]] && analyze_args="--verbose"
+
+    if "$analyze_test_script" $analyze_args >/tmp/analyze_test_output.txt 2>&1; then
+        log_pass "Analyze regression tests passed"
+        if [[ $VERBOSE -eq 1 ]]; then
+            cat /tmp/analyze_test_output.txt
+        fi
+    else
+        log_fail "Analyze regression tests failed"
+        cat /tmp/analyze_test_output.txt | tail -30
+        return 1
+    fi
+}
+
 # ============================================================================
 # MAIN TEST RUNNER
 # ============================================================================
@@ -373,6 +406,7 @@ main() {
     test_no_regression
     test_port_command
     test_port_unit_tests
+    test_analyze_regression
 
     # Summary
     echo ""
