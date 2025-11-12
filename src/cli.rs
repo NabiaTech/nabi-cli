@@ -5,8 +5,8 @@
 
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use std::fmt;
-use std::path::Path;
-use crate::commands::tmux;
+use std::path::{Path, PathBuf};
+use crate::commands::{kernel, tmux};
 
 /// nabi - Unified Federation Command Gateway
 ///
@@ -58,6 +58,11 @@ pub enum Commands {
     Repo {
         #[command(subcommand)]
         command: RepoCommands,
+    },
+    /// Codebase analysis and indexing (alias for 'repo analyze')
+    Analyze {
+        #[command(subcommand)]
+        command: AnalyzeCommands,
     },
     /// Tool registry operations
     Tool {
@@ -126,6 +131,11 @@ pub enum Commands {
         #[command(subcommand)]
         command: tmux::TmuxCommands,
     },
+    /// Microkernel monitoring (memchain vs isolated panes)
+    Kernel {
+        #[command(subcommand)]
+        command: kernel::KernelCommands,
+    },
     Hooks {
         #[command(subcommand)]
         command: HooksCommands,
@@ -158,9 +168,22 @@ pub enum Commands {
         #[arg(value_enum)]
         shell: clap_complete::Shell,
     },
+    /// deckgen utilities (schema + trace fixtures)
+    Deckgen {
+        #[command(subcommand)]
+        command: DeckgenCommands,
+    },
     /// Health check (alias for 'self doctor')
     #[command(visible_alias = "doc")]
     Doctor,
+    /// Migrate directories from XDG_STATE_HOME to XDG_DATA_HOME
+    ///
+    /// Safely migrates directories from state to data with conflict detection,
+    /// path traversal protection, and dry-run support.
+    Migrate {
+        #[command(subcommand)]
+        command: MigrateCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -309,6 +332,12 @@ pub enum RepoCommands {
         strict: bool,
     },
     /// Index a repository for code analysis (creates persistent graph)
+    ///
+    /// Analyzes a codebase and creates a searchable symbol index. The index is cached
+    /// and reused on subsequent runs unless --force is specified. Multiple analyses of
+    /// the same repository with different languages are stored separately to avoid
+    /// overwriting. This enables multi-agent workflows where agents can share cached
+    /// analysis results.
     Analyze {
         /// Path to repository to analyze
         #[arg(value_name = "PATH")]
@@ -318,8 +347,8 @@ pub enum RepoCommands {
         #[arg(short, long)]
         lang: Option<String>,
 
-        /// Force re-indexing (skip cache check)
-        #[arg(short, long)]
+        /// Force re-indexing (rebuild index even if cached version exists)
+        #[arg(long)]
         force: bool,
 
         /// Output format (text, json)
@@ -330,6 +359,34 @@ pub enum RepoCommands {
     Graph {
         #[command(subcommand)]
         action: GraphActions,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum AnalyzeCommands {
+    /// Index a repository for code analysis (creates persistent graph)
+    ///
+    /// Analyzes a codebase and creates a searchable symbol index. The index is cached
+    /// and reused on subsequent runs unless --force is specified. Multiple analyses of
+    /// the same repository with different languages are stored separately to avoid
+    /// overwriting. This enables multi-agent workflows where agents can share cached
+    /// analysis results.
+    Repo {
+        /// Path to repository to analyze
+        #[arg(value_name = "PATH")]
+        repo_path: String,
+
+        /// Language hint (auto-detect if not provided: rust, python, go, typescript)
+        #[arg(short, long)]
+        lang: Option<String>,
+
+        /// Force re-indexing (rebuild index even if cached version exists)
+        #[arg(long)]
+        force: bool,
+
+        /// Output format (text, json)
+        #[arg(short, long, default_value = "text")]
+        format: String,
     },
 }
 
@@ -721,6 +778,16 @@ pub enum HookDebugActions {
 }
 
 #[derive(Subcommand)]
+pub enum DeckgenCommands {
+    /// Emit the canonical seeded deckgen trace fixture
+    Trace {
+        /// Optional file path to write the trace JSON; stdout if omitted
+        #[arg(short, long, value_name = "PATH")]
+        output: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
 pub enum RecoverCommands {
     /// Recover recent Claude sessions
     Sessions {
@@ -770,6 +837,53 @@ pub enum HealthCommands {
         /// Port to access Grafana
         #[arg(long, default_value = "3000")]
         port: u16,
+    },
+    /// Start HTTP API server for remote monitoring
+    Api {
+        /// Port to run API server on
+        #[arg(default_value = "8000")]
+        port: u16,
+        /// Host to bind to
+        #[arg(default_value = "127.0.0.1")]
+        host: String,
+        /// Run in debug mode
+        #[arg(long)]
+        debug: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum MigrateCommands {
+    /// Migrate directories from state to data
+    ///
+    /// Migrates specified directories from XDG_STATE_HOME to XDG_DATA_HOME.
+    /// Supports dry-run mode, conflict detection, and selective migration.
+    Run {
+        /// Directory name in state to migrate (can be specified multiple times)
+        #[arg(short, long, value_name = "DIR")]
+        dir: Vec<String>,
+        /// Dry run mode (preview changes without executing)
+        #[arg(long)]
+        dry_run: bool,
+        /// Force overwrite on conflicts
+        #[arg(short, long)]
+        force: bool,
+        /// Verbose output
+        #[arg(short, long)]
+        verbose: bool,
+    },
+    /// Verify completed migrations
+    ///
+    /// Checks that migrations completed successfully by verifying:
+    /// - Source directories are removed or empty
+    /// - Destination directories exist and contain expected files
+    Verify {
+        /// Directory name to verify (can be specified multiple times)
+        #[arg(short, long, value_name = "DIR")]
+        dir: Vec<String>,
+        /// Verbose output
+        #[arg(short, long)]
+        verbose: bool,
     },
 }
 

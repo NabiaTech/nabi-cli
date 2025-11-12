@@ -12,11 +12,16 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process;
 
+mod cli;
 mod commands;
 mod deckgen;
 mod forge;
+mod handlers;
 mod paths;
 mod repo;
+mod routing;
+mod spec;
+mod utils;
 use commands::kernel;
 use commands::port;
 use commands::tmux;
@@ -222,6 +227,14 @@ enum Commands {
     /// Health check (alias for 'self doctor')
     #[command(visible_alias = "doc")]
     Doctor,
+    /// Migrate directories from XDG_STATE_HOME to XDG_DATA_HOME
+    ///
+    /// Safely migrates directories from state to data with conflict detection,
+    /// path traversal protection, and dry-run support.
+    Migrate {
+        #[command(subcommand)]
+        command: cli::MigrateCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1467,6 +1480,7 @@ fn main() -> Result<()> {
         Commands::Completions { shell } => handle_completions(shell),
         Commands::Deckgen { command } => handle_deckgen(command),
         Commands::Doctor => handle_self(SelfCommands::Doctor),
+        Commands::Migrate { command } => handle_migrate(command),
     }
 }
 
@@ -4074,4 +4088,17 @@ fn output_tools_json(
     println!("{}", serde_json::to_string_pretty(&output)?);
 
     Ok(())
+}
+
+fn handle_migrate(command: cli::MigrateCommands) -> Result<()> {
+    use crate::handlers::migrate;
+
+    match command {
+        cli::MigrateCommands::Run { dir, dry_run, force, verbose } => {
+            migrate::handle_migrate_run(&dir, dry_run, force, verbose)
+        }
+        cli::MigrateCommands::Verify { dir, verbose } => {
+            migrate::handle_migrate_verify(&dir, verbose)
+        }
+    }
 }

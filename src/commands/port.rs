@@ -11,7 +11,6 @@
 /// - drift: Forensic analysis of port drift
 /// - fix: Auto-generate fix commands for conflicts
 /// - generate-env: Generate docker-compose .env file
-
 use anyhow::{Context, Result};
 use colored::Colorize;
 use serde::{Deserialize, Serialize};
@@ -186,8 +185,12 @@ pub fn load_registry() -> Result<PortRegistry> {
     let content = fs::read_to_string(&registry_path)
         .with_context(|| format!("Failed to read registry from {}", registry_path.display()))?;
 
-    let registry: PortRegistry = serde_json::from_str(&content)
-        .with_context(|| format!("Failed to parse registry JSON from {}", registry_path.display()))?;
+    let registry: PortRegistry = serde_json::from_str(&content).with_context(|| {
+        format!(
+            "Failed to parse registry JSON from {}",
+            registry_path.display()
+        )
+    })?;
 
     Ok(registry)
 }
@@ -196,7 +199,9 @@ fn get_registry_path() -> Result<PathBuf> {
     // Runtime data (registry.json) belongs in XDG_STATE_HOME per XDG Base Directory Spec
     // Check NABI_HOME environment variable first (backward compatibility)
     if let Ok(nabi_home) = std::env::var("NABI_HOME") {
-        let path = PathBuf::from(nabi_home).join("governance").join("port-registry.json");
+        let path = PathBuf::from(nabi_home)
+            .join("governance")
+            .join("port-registry.json");
         if path.exists() {
             return Ok(path);
         }
@@ -246,7 +251,11 @@ fn check_service_health(
     standard: Option<&StandardAllocation>,
 ) -> ServiceHealth {
     let port = spec.port.unwrap_or(0);
-    let listening = if port > 0 { is_port_listening(port) } else { false };
+    let listening = if port > 0 {
+        is_port_listening(port)
+    } else {
+        false
+    };
 
     // For now, we'll consider a service responding if it's listening
     // Full HTTP health checks would require adding reqwest dependency
@@ -283,20 +292,30 @@ pub fn cmd_list(platform_filter: Option<&str>) -> Result<()> {
 
                 if let Some(port) = service_spec.port {
                     if let Some(endpoint) = &service_spec.endpoint {
-                        println!("  {} {}: port {} → {}", status, service_name, port, endpoint);
+                        println!(
+                            "  {} {}: port {} → {}",
+                            status, service_name, port, endpoint
+                        );
                     } else {
                         println!("  {} {}: port {}", status, service_name, port);
                     }
                 } else if let Some(ports) = &service_spec.ports {
                     // Multi-port service
-                    let ports_str: Vec<String> = ports.iter()
-                        .map(|(k, v)| format!("{}:{}", k, v))
-                        .collect();
-                    println!("  {} {}: ports {}", status, service_name, ports_str.join(", "));
+                    let ports_str: Vec<String> =
+                        ports.iter().map(|(k, v)| format!("{}:{}", k, v)).collect();
+                    println!(
+                        "  {} {}: ports {}",
+                        status,
+                        service_name,
+                        ports_str.join(", ")
+                    );
                 }
             }
         } else {
-            eprintln!("{}", format!("Platform '{}' not found in registry", platform).red());
+            eprintln!(
+                "{}",
+                format!("Platform '{}' not found in registry", platform).red()
+            );
         }
     } else {
         // Show all platforms
@@ -312,10 +331,14 @@ pub fn cmd_list(platform_filter: Option<&str>) -> Result<()> {
                 if let Some(port) = service_spec.port {
                     println!("  {} {}: port {}", status, service_name, port);
                 } else if let Some(ports) = &service_spec.ports {
-                    let ports_str: Vec<String> = ports.iter()
-                        .map(|(k, v)| format!("{}:{}", k, v))
-                        .collect();
-                    println!("  {} {}: ports {}", status, service_name, ports_str.join(", "));
+                    let ports_str: Vec<String> =
+                        ports.iter().map(|(k, v)| format!("{}:{}", k, v)).collect();
+                    println!(
+                        "  {} {}: ports {}",
+                        status,
+                        service_name,
+                        ports_str.join(", ")
+                    );
                 }
             }
         }
@@ -335,7 +358,9 @@ pub fn cmd_check() -> Result<()> {
     println!("SERVICE HEALTH REPORT");
     println!("{}", "=".repeat(70));
 
-    let config = registry.platform_configs.get(&platform)
+    let config = registry
+        .platform_configs
+        .get(&platform)
         .ok_or_else(|| anyhow::anyhow!("Platform '{}' not found in registry", platform))?;
 
     let mut issues = Vec::new();
@@ -358,11 +383,20 @@ pub fn cmd_check() -> Result<()> {
             "❌"
         };
 
-        println!("\n{} {} (Port {})", status_icon, health.service, health.port);
-        println!("   Listening: {}", if health.listening { "Yes" } else { "No" });
+        println!(
+            "\n{} {} (Port {})",
+            status_icon, health.service, health.port
+        );
+        println!(
+            "   Listening: {}",
+            if health.listening { "Yes" } else { "No" }
+        );
 
         if health.listening {
-            println!("   Health Check: {}", if health.responding { "Pass" } else { "Fail" });
+            println!(
+                "   Health Check: {}",
+                if health.responding { "Pass" } else { "Fail" }
+            );
         }
 
         // Check for issues
@@ -433,23 +467,28 @@ pub fn cmd_cross_platform() -> Result<()> {
                 continue;
             }
 
-            let standard_port = registry.standard_allocations
+            let standard_port = registry
+                .standard_allocations
                 .get(service_name)
                 .and_then(|s| s.port);
 
             // Handle single port services
             if let Some(port) = service_spec.port {
-                port_map.entry(port)
-                    .or_insert_with(Vec::new)
-                    .push((platform.clone(), service_name.clone(), standard_port));
+                port_map.entry(port).or_insert_with(Vec::new).push((
+                    platform.clone(),
+                    service_name.clone(),
+                    standard_port,
+                ));
             }
 
             // Handle multi-port services
             if let Some(ports) = &service_spec.ports {
                 for (_, port) in ports {
-                    port_map.entry(*port)
-                        .or_insert_with(Vec::new)
-                        .push((platform.clone(), service_name.clone(), standard_port));
+                    port_map.entry(*port).or_insert_with(Vec::new).push((
+                        platform.clone(),
+                        service_name.clone(),
+                        standard_port,
+                    ));
                 }
             }
         }
@@ -460,7 +499,8 @@ pub fn cmd_cross_platform() -> Result<()> {
     // Analyze conflicts
     for (port, usages) in &port_map {
         if usages.len() > 1 {
-            let services: Vec<String> = usages.iter()
+            let services: Vec<String> = usages
+                .iter()
                 .map(|(p, s, _)| format!("{}@{}", s, p))
                 .collect();
             conflicts.push(format!(
@@ -512,7 +552,9 @@ pub fn cmd_shift(service: &str, old_port: u16, new_port: u16, dry_run: bool) -> 
     // Verify service exists with proper fallback:
     // 1. Try platform_configs first (platform-specific override)
     // 2. Fall back to standard_allocations (global default)
-    let config = registry.platform_configs.get_mut(&platform)
+    let config = registry
+        .platform_configs
+        .get_mut(&platform)
         .ok_or_else(|| anyhow::anyhow!("Platform '{}' not found", platform))?;
 
     let service_spec = if let Some(spec) = config.services.get(service) {
@@ -525,20 +567,32 @@ pub fn cmd_shift(service: &str, old_port: u16, new_port: u16, dry_run: bool) -> 
         println!("   Consider adding to platform_configs for platform-specific settings");
         None
     } else {
-        anyhow::bail!("Service '{}' not found in platform '{}' or standard allocations", service, platform);
+        anyhow::bail!(
+            "Service '{}' not found in platform '{}' or standard allocations",
+            service,
+            platform
+        );
     };
 
     // Check current port matches
     if let Some(spec) = &service_spec {
         if let Some(current_port) = spec.port {
             if current_port != old_port {
-                anyhow::bail!("Current port mismatch: service is on {}, not {}", current_port, old_port);
+                anyhow::bail!(
+                    "Current port mismatch: service is on {}, not {}",
+                    current_port,
+                    old_port
+                );
             }
         }
     } else if let Some(std_alloc) = registry.standard_allocations.get(service) {
         if let Some(current_port) = std_alloc.port {
             if current_port != old_port {
-                anyhow::bail!("Current port mismatch: service is on {}, not {}", current_port, old_port);
+                anyhow::bail!(
+                    "Current port mismatch: service is on {}, not {}",
+                    current_port,
+                    old_port
+                );
             }
         }
     }
@@ -577,7 +631,10 @@ pub fn cmd_shift(service: &str, old_port: u16, new_port: u16, dry_run: bool) -> 
         // Update port-registry.json with new port for this platform
         if let Some(service_spec_mut) = config.services.get_mut(service) {
             service_spec_mut.port = Some(new_port);
-            println!("✓ Updated port in platform config: {} → {}", old_port, new_port);
+            println!(
+                "✓ Updated port in platform config: {} → {}",
+                old_port, new_port
+            );
         } else {
             // Create new service spec entry for this platform from standard allocation
             if let Some(std_alloc) = registry.standard_allocations.get(service) {
@@ -589,10 +646,16 @@ pub fn cmd_shift(service: &str, old_port: u16, new_port: u16, dry_run: bool) -> 
                     endpoint: None,
                     compose_file: None,
                     container_name: None,
-                    note: Some(format!("Platform-specific override: port {} → {}", old_port, new_port)),
+                    note: Some(format!(
+                        "Platform-specific override: port {} → {}",
+                        old_port, new_port
+                    )),
                 };
                 config.services.insert(service.to_string(), new_spec);
-                println!("✓ Created platform-specific entry for {}: port {}", service, new_port);
+                println!(
+                    "✓ Created platform-specific entry for {}: port {}",
+                    service, new_port
+                );
             }
         }
 
@@ -600,8 +663,7 @@ pub fn cmd_shift(service: &str, old_port: u16, new_port: u16, dry_run: bool) -> 
         let registry_path = get_registry_path()?;
         let json = serde_json::to_string_pretty(&registry)
             .context("Failed to serialize updated registry")?;
-        fs::write(&registry_path, json)
-            .context("Failed to write updated registry")?;
+        fs::write(&registry_path, json).context("Failed to write updated registry")?;
         println!("✓ Saved registry to {}", registry_path.display());
 
         println!("\n{}", "Migration complete!".green().bold());
@@ -669,7 +731,9 @@ pub fn cmd_fix() -> Result<()> {
     println!("FIX COMMANDS");
     println!("{}", "=".repeat(70));
 
-    let config = registry.platform_configs.get(&platform)
+    let config = registry
+        .platform_configs
+        .get(&platform)
         .ok_or_else(|| anyhow::anyhow!("Platform '{}' not found", platform))?;
 
     println!("\n# Stop conflicting services:");
@@ -711,7 +775,9 @@ pub fn cmd_generate_env() -> Result<()> {
     let registry = load_registry()?;
     let platform = detect_platform();
 
-    let config = registry.platform_configs.get(&platform)
+    let config = registry
+        .platform_configs
+        .get(&platform)
         .ok_or_else(|| anyhow::anyhow!("Platform '{}' not found", platform))?;
 
     let mut env_lines = vec![
@@ -777,9 +843,9 @@ mod tests {
         assert!(is_valid_port(8080)); // Common dev port
 
         // Invalid ports
-        assert!(!is_valid_port(0));     // Too low
-        assert!(!is_valid_port(1));     // Reserved range
-        assert!(!is_valid_port(1024));  // Below federation range (deprecated check)
+        assert!(!is_valid_port(0)); // Too low
+        assert!(!is_valid_port(1)); // Reserved range
+        assert!(!is_valid_port(1024)); // Below federation range (deprecated check)
         assert!(!is_valid_port(65535)); // Too high for our range
     }
 
@@ -869,9 +935,9 @@ mod tests {
     #[test]
     fn test_port_listening_check_invalid_ports() {
         // Test ports that should never be listening
-        assert!(!is_port_listening(1));      // Reserved, should be false
-        assert!(!is_port_listening(12345));  // Unlikely to be listening
-        assert!(!is_port_listening(54321));  // Unlikely to be listening
+        assert!(!is_port_listening(1)); // Reserved, should be false
+        assert!(!is_port_listening(12345)); // Unlikely to be listening
+        assert!(!is_port_listening(54321)); // Unlikely to be listening
     }
 
     #[test]

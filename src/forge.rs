@@ -50,12 +50,10 @@ impl Default for ForgeConfig {
 impl ForgeConfig {
     /// Get the config file path
     pub fn config_path() -> Result<PathBuf> {
-        let config_dir = NabiPaths::config_dir()?
-            .join("config");
+        let config_dir = NabiPaths::config_dir()?.join("config");
 
         // Ensure directory exists
-        fs::create_dir_all(&config_dir)
-            .context("Failed to create config directory")?;
+        fs::create_dir_all(&config_dir).context("Failed to create config directory")?;
 
         Ok(config_dir.join("forge.yaml"))
     }
@@ -71,11 +69,10 @@ impl ForgeConfig {
             return Ok(config);
         }
 
-        let contents = fs::read_to_string(&path)
-            .context("Failed to read forge config")?;
+        let contents = fs::read_to_string(&path).context("Failed to read forge config")?;
 
-        let config: Self = serde_yaml::from_str(&contents)
-            .context("Failed to parse forge config")?;
+        let config: Self =
+            serde_yaml::from_str(&contents).context("Failed to parse forge config")?;
 
         Ok(config)
     }
@@ -85,19 +82,20 @@ impl ForgeConfig {
         let path = Self::config_path()?;
 
         // Create temp file in same directory for atomic rename
-        let temp_file = NamedTempFile::new_in(path.parent().unwrap())
-            .context("Failed to create temp file")?;
+        let temp_file =
+            NamedTempFile::new_in(path.parent().unwrap()).context("Failed to create temp file")?;
 
         // Write YAML content
-        let yaml = serde_yaml::to_string(&self)
-            .context("Failed to serialize config")?;
+        let yaml = serde_yaml::to_string(&self).context("Failed to serialize config")?;
 
-        temp_file.as_file()
+        temp_file
+            .as_file()
             .write_all(yaml.as_bytes())
             .context("Failed to write to temp file")?;
 
         // Atomic rename
-        temp_file.persist(&path)
+        temp_file
+            .persist(&path)
             .context("Failed to persist config file")?;
 
         Ok(())
@@ -163,8 +161,9 @@ impl ForgeConfig {
     pub fn export_env_vars(&self) {
         for (name, feature) in &self.features {
             if feature.enabled {
-                let env_var = feature.env_var.clone()
-                    .unwrap_or_else(|| format!("NABI_FORGE_{}", name.to_uppercase().replace('-', "_")));
+                let env_var = feature.env_var.clone().unwrap_or_else(|| {
+                    format!("NABI_FORGE_{}", name.to_uppercase().replace('-', "_"))
+                });
                 std::env::set_var(env_var, "1");
             }
         }
@@ -176,8 +175,9 @@ impl ForgeConfig {
 
         for (name, feature) in &self.features {
             if feature.enabled {
-                let env_var = feature.env_var.clone()
-                    .unwrap_or_else(|| format!("NABI_FORGE_{}", name.to_uppercase().replace('-', "_")));
+                let env_var = feature.env_var.clone().unwrap_or_else(|| {
+                    format!("NABI_FORGE_{}", name.to_uppercase().replace('-', "_"))
+                });
                 exports.push(format!("export {}=1", env_var));
             }
         }
@@ -190,17 +190,32 @@ impl ForgeConfig {
 pub fn handle_enable(feature: String) -> Result<()> {
     let mut config = ForgeConfig::load()?;
 
-    println!("{}", format!("🔥 Enabling feature: {}", feature).cyan().bold());
+    println!(
+        "{}",
+        format!("🔥 Enabling feature: {}", feature).cyan().bold()
+    );
 
     config.enable_feature(&feature, None)?;
 
-    println!("{}", format!("✓ Feature '{}' enabled", feature).green().bold());
-    println!("{}", format!("  Environment variable: NABI_FORGE_{}",
-        feature.to_uppercase().replace('-', "_")).dimmed());
+    println!(
+        "{}",
+        format!("✓ Feature '{}' enabled", feature).green().bold()
+    );
+    println!(
+        "{}",
+        format!(
+            "  Environment variable: NABI_FORGE_{}",
+            feature.to_uppercase().replace('-', "_")
+        )
+        .dimmed()
+    );
 
     // Show export command for user
     println!("\n{}", "To export in current shell:".yellow());
-    println!("  export NABI_FORGE_{}=1", feature.to_uppercase().replace('-', "_"));
+    println!(
+        "  export NABI_FORGE_{}=1",
+        feature.to_uppercase().replace('-', "_")
+    );
 
     Ok(())
 }
@@ -209,11 +224,17 @@ pub fn handle_enable(feature: String) -> Result<()> {
 pub fn handle_disable(feature: String) -> Result<()> {
     let mut config = ForgeConfig::load()?;
 
-    println!("{}", format!("🔥 Disabling feature: {}", feature).cyan().bold());
+    println!(
+        "{}",
+        format!("🔥 Disabling feature: {}", feature).cyan().bold()
+    );
 
     config.disable_feature(&feature)?;
 
-    println!("{}", format!("✓ Feature '{}' disabled", feature).green().bold());
+    println!(
+        "{}",
+        format!("✓ Feature '{}' disabled", feature).green().bold()
+    );
 
     Ok(())
 }
@@ -267,8 +288,14 @@ pub fn handle_status() -> Result<()> {
         }
     }
 
-    println!("\n{}", format!("Last modified: {}",
-        config.last_modified.format("%Y-%m-%d %H:%M:%S UTC")).dimmed());
+    println!(
+        "\n{}",
+        format!(
+            "Last modified: {}",
+            config.last_modified.format("%Y-%m-%d %H:%M:%S UTC")
+        )
+        .dimmed()
+    );
 
     Ok(())
 }
@@ -282,11 +309,17 @@ pub fn handle_list() -> Result<()> {
     let features = vec![
         ("test-mode", "Enable test mode for development"),
         ("debug-logging", "Enable verbose debug logging"),
-        ("federation-sync", "Enable automatic federation synchronization"),
+        (
+            "federation-sync",
+            "Enable automatic federation synchronization",
+        ),
         ("hook-system", "Enable Claude Code hook system"),
         ("vigil-monitoring", "Enable Vigil context injection"),
         ("experimental", "Enable experimental features"),
-        ("performance-metrics", "Enable performance metric collection"),
+        (
+            "performance-metrics",
+            "Enable performance metric collection",
+        ),
         ("parallel-execution", "Enable parallel agent execution"),
         ("smart-routing", "Enable intelligent command routing"),
         ("context-injection", "Enable automatic context injection"),
@@ -295,7 +328,10 @@ pub fn handle_list() -> Result<()> {
     for (name, description) in features {
         println!("\n  {} {}", "•".cyan(), name.bold());
         println!("    {}", description.dimmed());
-        println!("    → NABI_FORGE_{}", name.to_uppercase().replace('-', "_").dimmed());
+        println!(
+            "    → NABI_FORGE_{}",
+            name.to_uppercase().replace('-', "_").dimmed()
+        );
     }
 
     println!("\n{}", "Usage:".yellow());

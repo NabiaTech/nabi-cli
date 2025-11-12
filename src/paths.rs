@@ -3,7 +3,6 @@
 /// Provides centralized, environment-aware path resolution for nabi-cli.
 /// Respects XDG_CONFIG_HOME, XDG_DATA_HOME, XDG_STATE_HOME, XDG_CACHE_HOME
 /// with intelligent fallbacks for cross-platform compatibility.
-
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 
@@ -83,8 +82,7 @@ impl NabiPaths {
     ///
     /// Used for installing CLI wrappers and executables
     pub fn bin_dir() -> Result<PathBuf> {
-        let home = dirs::home_dir()
-            .context("Could not determine home directory")?;
+        let home = dirs::home_dir().context("Could not determine home directory")?;
         Ok(home.join(".local").join("bin"))
     }
 
@@ -92,15 +90,13 @@ impl NabiPaths {
     ///
     /// Stores Python virtual environments for tool runtime isolation
     pub fn venv_dir() -> Result<PathBuf> {
-        let home = dirs::home_dir()
-            .context("Could not determine home directory")?;
+        let home = dirs::home_dir().context("Could not determine home directory")?;
         Ok(home.join(".nabi").join("venvs"))
     }
 
     /// Get home directory (fallback for operations that need it)
     pub fn home_dir() -> Result<PathBuf> {
-        dirs::home_dir()
-            .context("Could not determine home directory")
+        dirs::home_dir().context("Could not determine home directory")
     }
 }
 

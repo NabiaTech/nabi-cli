@@ -225,18 +225,26 @@ pub fn run(aura_name: Option<String>, dry_run: bool, force: bool) -> Result<()> 
     println!();
 
     // Load AURA schema
-    let aura_path = NabiPaths::config_dir()?.join("auras").join(format!("{}.toml", aura_profile));
+    let aura_path = NabiPaths::config_dir()?
+        .join("auras")
+        .join(format!("{}.toml", aura_profile));
     let aura_content = fs::read_to_string(&aura_path)
         .with_context(|| format!("Failed to read AURA profile: {}", aura_path.display()))?;
-    let aura: AuraProfile = toml::from_str(&aura_content)
-        .with_context(|| "Failed to parse AURA profile")?;
+    let aura: AuraProfile =
+        toml::from_str(&aura_content).with_context(|| "Failed to parse AURA profile")?;
 
-    println!("{}", format!("Profile: {}", aura.profile.description).dimmed());
+    println!(
+        "{}",
+        format!("Profile: {}", aura.profile.description).dimmed()
+    );
     println!("{}", format!("Version: {}", aura.profile.version).dimmed());
     println!();
 
     // Stage 2: Schema Transformation
-    println!("{}", "Stage 2: Transforming AURA → settings.json".yellow().bold());
+    println!(
+        "{}",
+        "Stage 2: Transforming AURA → settings.json".yellow().bold()
+    );
     if !dry_run {
         transform_aura_to_settings(&aura, force)?;
         println!("{}", "✓ settings.json generated\n".green());
@@ -265,7 +273,10 @@ pub fn run(aura_name: Option<String>, dry_run: bool, force: bool) -> Result<()> 
     }
 
     // Stage 5: Federation Registration
-    println!("{}", "Stage 5: Initializing federation state".yellow().bold());
+    println!(
+        "{}",
+        "Stage 5: Initializing federation state".yellow().bold()
+    );
     if !dry_run {
         initialize_federation_state(&aura)?;
         println!("{}", "✓ Federation state initialized\n".green());
@@ -306,13 +317,17 @@ fn check_prerequisites() -> Result<()> {
     }
 
     // Check uv
-    let uv_check = Command::new("uv")
-        .arg("--version")
-        .output();
+    let uv_check = Command::new("uv").arg("--version").output();
 
     if uv_check.is_err() {
-        println!("{}", "  ⚠️  uv not found (recommended for Python package management)".yellow());
-        println!("{}", "     Install: curl -LsSf https://astral.sh/uv/install.sh | sh".dimmed());
+        println!(
+            "{}",
+            "  ⚠️  uv not found (recommended for Python package management)".yellow()
+        );
+        println!(
+            "{}",
+            "     Install: curl -LsSf https://astral.sh/uv/install.sh | sh".dimmed()
+        );
     }
 
     // Check git
@@ -356,7 +371,10 @@ fn transform_aura_to_settings(aura: &AuraProfile, force: bool) -> Result<()> {
         let backup_path = settings_path.with_extension("json.backup");
         fs::copy(&settings_path, &backup_path)
             .context("Failed to backup existing settings.json")?;
-        println!("{}", format!("  📋 Backed up to: {}", backup_path.display()).dimmed());
+        println!(
+            "{}",
+            format!("  📋 Backed up to: {}", backup_path.display()).dimmed()
+        );
     }
 
     // Build settings.json from AURA
@@ -368,7 +386,10 @@ fn transform_aura_to_settings(aura: &AuraProfile, force: bool) -> Result<()> {
     fs::write(&temp_path, settings_json)?;
     fs::rename(&temp_path, &settings_path)?;
 
-    println!("{}", format!("  ✓ Written: {}", settings_path.display()).green());
+    println!(
+        "{}",
+        format!("  ✓ Written: {}", settings_path.display()).green()
+    );
 
     Ok(())
 }
@@ -405,7 +426,11 @@ fn build_settings_from_aura(aura: &AuraProfile) -> Result<ClaudeSettings> {
         } else {
             None
         },
-        user_prompt_submit: if aura.hooks.enabled.contains(&"user_prompt_submit".to_string()) {
+        user_prompt_submit: if aura
+            .hooks
+            .enabled
+            .contains(&"user_prompt_submit".to_string())
+        {
             Some(build_hook("user_prompt_submit", 3))
         } else {
             None
@@ -504,7 +529,10 @@ fn install_hooks(aura: &AuraProfile) -> Result<()> {
 
     // Check if hooks directory exists
     if !hooks_dir.exists() {
-        println!("{}", "  ⚠️  Hooks directory not found, cloning nabi config...".yellow());
+        println!(
+            "{}",
+            "  ⚠️  Hooks directory not found, cloning nabi config...".yellow()
+        );
 
         // Clone nabi config repository
         let clone_status = Command::new("git")
@@ -569,19 +597,29 @@ fn generate_manifest() -> Result<()> {
     let git_dir = cwd.join(".git");
 
     if !git_dir.exists() {
-        println!("{}", "  ⚠️  Not in a git repository, skipping manifest generation".yellow());
+        println!(
+            "{}",
+            "  ⚠️  Not in a git repository, skipping manifest generation".yellow()
+        );
         return Ok(());
     }
 
     // TODO: Call nabi docs manifest generate
-    println!("{}", "  📝 Manifest generation not yet implemented".dimmed());
+    println!(
+        "{}",
+        "  📝 Manifest generation not yet implemented".dimmed()
+    );
 
     Ok(())
 }
 
 fn initialize_federation_state(aura: &AuraProfile) -> Result<()> {
-    let state_dir = PathBuf::from(expand_env_vars(&aura.environment.get("FEDERATION_STATE")
-        .unwrap_or(&"~/.memchain".to_string())));
+    let state_dir = PathBuf::from(expand_env_vars(
+        &aura
+            .environment
+            .get("FEDERATION_STATE")
+            .unwrap_or(&"~/.memchain".to_string()),
+    ));
 
     // Create federation directory structure
     fs::create_dir_all(&state_dir.join("federation"))?;
@@ -636,23 +674,32 @@ fn check_infrastructure_health() -> HealthStatus {
 }
 
 fn print_health_status(status: &HealthStatus) {
-    println!("{}", if status.loki_available {
-        "  ✓ Loki: Available".green()
-    } else {
-        "  ⚠️  Loki: Unavailable (optional)".yellow()
-    });
+    println!(
+        "{}",
+        if status.loki_available {
+            "  ✓ Loki: Available".green()
+        } else {
+            "  ⚠️  Loki: Unavailable (optional)".yellow()
+        }
+    );
 
-    println!("{}", if status.tmux_available {
-        "  ✓ tmux: Available".green()
-    } else {
-        "  ⚠️  tmux: Not installed (optional)".yellow()
-    });
+    println!(
+        "{}",
+        if status.tmux_available {
+            "  ✓ tmux: Available".green()
+        } else {
+            "  ⚠️  tmux: Not installed (optional)".yellow()
+        }
+    );
 
-    println!("{}", if status.coordination_server_available {
-        "  ✓ Coordination Server: Available".green()
-    } else {
-        "  ⚠️  Coordination Server: Unavailable (optional)".yellow()
-    });
+    println!(
+        "{}",
+        if status.coordination_server_available {
+            "  ✓ Coordination Server: Available".green()
+        } else {
+            "  ⚠️  Coordination Server: Unavailable (optional)".yellow()
+        }
+    );
 }
 
 fn validate_installation(aura: &AuraProfile) -> Result<()> {
@@ -684,8 +731,12 @@ fn validate_installation(aura: &AuraProfile) -> Result<()> {
     }
 
     // Validate federation state directory
-    let state_dir = PathBuf::from(expand_env_vars(&aura.environment.get("FEDERATION_STATE")
-        .unwrap_or(&"~/.memchain".to_string())));
+    let state_dir = PathBuf::from(expand_env_vars(
+        &aura
+            .environment
+            .get("FEDERATION_STATE")
+            .unwrap_or(&"~/.memchain".to_string()),
+    ));
     if !state_dir.join("federation").exists() {
         anyhow::bail!("Federation state directory not found");
     }
