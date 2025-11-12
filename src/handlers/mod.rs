@@ -2,6 +2,7 @@
 ///
 /// This module contains all command handler functions organized by domain.
 
+pub mod analyze;
 pub mod claude;
 pub mod data;
 pub mod federation;
@@ -25,3 +26,4 @@ pub mod recover;
 pub mod health;
 pub mod completions;
 pub mod port;
+pub mod migrate;

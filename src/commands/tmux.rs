@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use serde_json;
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::io::{self, Read};
 use std::process::Command;
 use std::str::FromStr;
 use std::thread;
@@ -130,6 +131,60 @@ PANE FORMAT:
         /// Allows time for tmux to process the command before returning.
         /// Increase this if you're sending rapid sequences or complex commands.
         /// Most cases work fine with the default 50ms.
+        #[arg(long, default_value = "50")]
+        delay: u64,
+    },
+
+    /// Send message + Execute from buffer (first line = target, rest = message)
+    ///
+    /// Reads from stdin or a file where:
+    ///   - First line: target pane (format: session:window.pane or session:window)
+    ///   - Remaining lines: message to send
+    ///
+    /// This command is designed for integration with editors like Helix,
+    /// where you can pipe buffer content directly to nabi tmux.
+    ///
+    /// The message preserves all newlines and formatting, making it perfect
+    /// for sending multi-line commands or scripts to tmux panes.
+    ///
+    /// Execution guarantees:
+    ///   - Same reliable delivery as send-prompt
+    ///   - Automatic recovery from TUI apps
+    ///   - Configurable delay for tmux processing
+    #[command(after_help = "EXAMPLES:
+  # Read from stdin (Helix integration)
+  echo -e ':4.2\necho hello\nls -lah' | nabi tmux send-prompt-from-buffer
+
+  # Read from file
+  nabi tmux send-prompt-from-buffer buffer.txt
+
+  # With custom delay
+  cat buffer.txt | nabi tmux send-prompt-from-buffer --delay 100
+
+  # Helix integration (in command palette)
+  :pipe-to nabi tmux send-prompt-from-buffer
+
+BUFFER FORMAT:
+  Line 1: Target pane (e.g., cross-pane:3.2, :4.2, mywindow:1)
+  Lines 2+: Message to send (preserves all newlines and formatting)
+
+  Example buffer:
+    :4.2
+    cd ~/nabia
+    cargo build --release
+    echo 'Build complete!'")]
+    SendPromptFromBuffer {
+        /// Input file path (if not provided, reads from stdin)
+        ///
+        /// If omitted, the command reads from stdin, making it perfect
+        /// for editor integration via pipe operations.
+        #[arg(value_name = "FILE", value_hint = ValueHint::FilePath)]
+        file: Option<String>,
+
+        /// Delay after execution in milliseconds (default: 50ms)
+        ///
+        /// Allows time for tmux to process the command before returning.
+        /// Increase this if you're sending rapid sequences or complex commands.
         #[arg(long, default_value = "50")]
         delay: u64,
     },
@@ -625,6 +680,9 @@ pub fn handle_tmux_commands(cmd: TmuxCommands) -> Result<()> {
             message,
             delay,
         } => handle_send_prompt(&pane, &message, delay),
+        TmuxCommands::SendPromptFromBuffer { file, delay } => {
+            handle_send_prompt_from_buffer(file.as_deref(), delay)
+        }
         TmuxCommands::Capture {
             pane,
             lines,
@@ -1934,6 +1992,86 @@ fn resolve_window_name(session: &str, name_spec: &str) -> Result<u32, String> {
             ))
         }
     }
+}
+
+/// Send message + Execute from buffer (first line = target, rest = message)
+///
+/// Reads buffer content from stdin or a file, parses the first line as the target pane,
+/// and uses the remaining lines as the message to send. This is designed for editor
+/// integration where buffer content can be piped directly to the command.
+///
+/// Buffer format:
+///   Line 1: Target pane (e.g., "cross-pane:3.2", ":4.2", "mywindow:1")
+///   Lines 2+: Message to send (preserves all newlines and formatting)
+///
+/// Supports shorthand targets (e.g., ":4.2") which are resolved using the current
+/// tmux session context.
+fn handle_send_prompt_from_buffer(file: Option<&str>, delay: u64) -> Result<()> {
+    // Read content from file or stdin
+    let content = if let Some(file_path) = file {
+        fs::read_to_string(file_path)
+            .with_context(|| format!("Failed to read file '{}'", file_path))?
+    } else {
+        // Read from stdin
+        let mut buffer = String::new();
+        io::stdin()
+            .read_to_string(&mut buffer)
+            .context("Failed to read from stdin")?;
+        buffer
+    };
+
+    if content.is_empty() {
+        anyhow::bail!("Buffer content is empty");
+    }
+
+    // Split into lines, preserving structure
+    let lines: Vec<&str> = content.lines().collect();
+
+    if lines.is_empty() {
+        anyhow::bail!("Buffer contains no lines");
+    }
+
+    // First line is the target pane
+    let mut target = lines[0].trim().to_string();
+    if target.is_empty() {
+        anyhow::bail!("First line must be target pane (e.g., ':4.2' or 'session:window.pane')");
+    }
+
+    // Resolve shorthand targets (e.g., ":4.2" -> "current-session:4.2")
+    // Shorthand format starts with ':' and has no session name before it
+    if target.starts_with(':') {
+        // Shorthand format like ":4.2" or ":4" - resolve using current session
+        let context = get_current_tmux_context()
+            .context("Cannot resolve shorthand target: not in a tmux session")?;
+
+        if !context.in_tmux {
+            anyhow::bail!("Cannot resolve shorthand target '{}': not in a tmux session. Use full format 'session:window.pane'", target);
+        }
+
+        let session = context.session_name
+            .ok_or_else(|| anyhow::anyhow!("Cannot determine current session for shorthand target"))?;
+
+        // Prepend session name to shorthand target
+        target = format!("{}{}", session, target);
+    }
+
+    // Remaining lines are the message
+    let message = if lines.len() > 1 {
+        // Join lines 2+ with newlines, preserving original formatting
+        lines[1..].join("\n")
+    } else {
+        anyhow::bail!("Message required (lines 2+). Buffer must contain at least 2 lines.");
+    };
+
+    // Remove trailing newline if present (but keep internal newlines)
+    let message = message.trim_end_matches('\n').to_string();
+
+    if message.is_empty() {
+        anyhow::bail!("Message cannot be empty (lines 2+ must contain content)");
+    }
+
+    // Call the existing send-prompt handler
+    handle_send_prompt(&target, &message, delay)
 }
 
 /// Send message + Enter as reliable operation to target pane
