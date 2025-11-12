@@ -1,12 +1,14 @@
 /// Analyze repository - Index code and create searchable graph
 ///
+/// **UNIFIED IMPLEMENTATION** - Uses AST-based parser via codegraph-mcp
+///
 /// Implements: nabi analyze repo <path> [--lang <language>]
 ///
 /// Flow:
 /// 1. Run pre-index validation hook
 /// 2. Detect language (or use provided)
-/// 3. Generate symbol index
-/// 4. Save to ~/.cache/nabi/codebase-graphs/
+/// 3. Generate symbol index via bun/make_graph.ts (AST-based)
+/// 4. Save to ~/.local/state/nabi/codegraph/graphs/{repo-name}/
 /// 5. Run post-index finalization hook
 use super::codegraph;
 use anyhow::Result;
@@ -39,23 +41,23 @@ pub fn analyze(repo_path: &str, language: Option<&str>, force: bool, format: &st
 
     // Detect language
     let detected_lang = language.map(|l| l.to_string()).unwrap_or_else(|| {
-        codegraph::detect_language(repo_path).unwrap_or_else(|_| "rust".to_string())
+        codegraph::detect_language(repo_path).unwrap_or_else(|_| "python".to_string())
     });
 
     println!("{}", format!("Language: {}", detected_lang).white());
     println!();
 
-    // Calculate cache directory path (includes language to avoid overwriting)
-    let cache_dir = codegraph::get_cache_dir()?;
+    // Get repository name
     let repo_name = path
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("unknown");
-    let repo_hash = format_hash(repo_path);
-    let index_dir = cache_dir.join(format!("{}-{}-{}", repo_name, repo_hash, detected_lang));
 
     // Check if index already exists
-    let index_exists = index_dir.exists() && index_dir.join("metadata.json").exists();
+    let graphs_dir = codegraph::get_graphs_dir()?;
+    let index_dir = graphs_dir.join(repo_name);
+    let graph_file = index_dir.join("graph.json");
+    let index_exists = graph_file.exists();
 
     let index = if index_exists && !force {
         // Reuse existing index
@@ -64,12 +66,12 @@ pub fn analyze(repo_path: &str, language: Option<&str>, force: bool, format: &st
             "{}",
             format!("  → Found existing index at: {}", index_dir.display()).cyan()
         );
-        let cached_index = codegraph::load_index(index_dir.to_str().unwrap())?;
+        let cached_index = codegraph::load_index(repo_name)?;
         println!(
             "{}",
             format!(
-                "  ✓ Loaded {} symbols from {} files",
-                cached_index.metadata.symbol_count, cached_index.metadata.file_count
+                "  ✓ Loaded {} symbols with {} edges",
+                cached_index.metadata.symbol_count, cached_index.metadata.edge_count
             )
             .green()
         );
@@ -97,31 +99,13 @@ pub fn analyze(repo_path: &str, language: Option<&str>, force: bool, format: &st
         println!("{}", "✓ Pre-index validation passed".green());
         println!();
 
-        // Generate index
+        // Generate index (AST-based via bun)
         println!("{}", "Phase 2: Index Generation".bold().cyan());
         let new_index = codegraph::generate_index(repo_path, &detected_lang)?;
-
-        println!(
-            "{}",
-            format!(
-                "  ✓ Indexed {} symbols in {} files",
-                new_index.metadata.symbol_count, new_index.metadata.file_count
-            )
-            .green()
-        );
-        println!();
-
-        // Save index
-        println!("{}", "Phase 3: Index Storage".bold().cyan());
-        codegraph::save_index(index_dir.to_str().unwrap(), &new_index)?;
-        println!(
-            "{}",
-            format!("  ✓ Index saved to: {}", index_dir.display()).green()
-        );
         println!();
 
         // Run post-index finalization
-        println!("{}", "Phase 4: Post-Index Finalization".bold().cyan());
+        println!("{}", "Phase 3: Post-Index Finalization".bold().cyan());
         codegraph::run_post_index_hook(repo_path, index_dir.to_str().unwrap())?;
         println!("{}", "✓ Post-index finalization complete".green());
         println!();
@@ -139,15 +123,6 @@ pub fn analyze(repo_path: &str, language: Option<&str>, force: bool, format: &st
     Ok(())
 }
 
-fn format_hash(input: &str) -> String {
-    // Simple hash for now - in production would use actual git commit hash
-    let hash = input
-        .chars()
-        .fold(0u64, |acc, c| acc.wrapping_mul(31).wrapping_add(c as u64));
-    // Pad to 8 characters with zeros, then take first 8
-    format!("{:08x}", hash)[..8].to_string()
-}
-
 fn output_result(format: &str, index: &codegraph::CodegraphIndex) -> Result<()> {
     match format {
         "json" => {
@@ -157,32 +132,28 @@ fn output_result(format: &str, index: &codegraph::CodegraphIndex) -> Result<()> 
         _ => {
             println!("{}", "Summary:".bold().cyan());
             println!("  Repository: {}", index.metadata.repository);
-            println!("  Language: {}", index.metadata.language);
             println!("  Symbols: {}", index.metadata.symbol_count);
-            println!("  Files: {}", index.metadata.file_count);
+            println!("  Edges: {}", index.metadata.edge_count);
             println!("  Created: {}", index.metadata.created);
 
             if index.metadata.symbol_count > 0 && index.metadata.symbol_count <= 20 {
                 println!();
                 println!("{}", "Indexed symbols:".bold().cyan());
-                for symbol in &index.symbols {
+                for symbol in index.graph.symbols.iter().take(20) {
+                    let kind_str = match symbol.kind.as_str() {
+                        "function" => "fn",
+                        "class" => "class",
+                        "method" => "method",
+                        "module" => "mod",
+                        "variable" => "var",
+                        _ => &symbol.kind,
+                    };
                     println!(
                         "  {} {} ({}:{})",
-                        match symbol.kind {
-                            codegraph::SymbolKind::Function => "fn",
-                            codegraph::SymbolKind::Struct => "struct",
-                            codegraph::SymbolKind::Trait => "trait",
-                            codegraph::SymbolKind::Enum => "enum",
-                            codegraph::SymbolKind::Module => "mod",
-                            _ => "other",
-                        },
+                        kind_str.dimmed(),
                         symbol.name.bold(),
-                        symbol
-                            .file
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or("?"),
-                        symbol.line
+                        symbol.file,
+                        symbol.range.start_line
                     );
                 }
             }
