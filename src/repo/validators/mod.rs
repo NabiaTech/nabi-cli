@@ -1,9 +1,9 @@
-use std::path::{Path, PathBuf};
 use anyhow::Result;
+use std::path::{Path, PathBuf};
 
-pub mod xdg;
 pub mod paths;
 pub mod symlinks;
+pub mod xdg;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Severity {

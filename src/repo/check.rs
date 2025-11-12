@@ -1,17 +1,23 @@
-use super::validators::{ComplianceReport, Validator, Severity};
-use super::validators::xdg::XdgValidator;
 use super::validators::paths::PathValidator;
 use super::validators::symlinks::SymlinkValidator;
+use super::validators::xdg::XdgValidator;
+use super::validators::{ComplianceReport, Severity, Validator};
 use anyhow::Result;
-use std::path::Path;
-use std::collections::HashMap;
 use colored::*;
+use std::collections::HashMap;
+use std::path::Path;
 
 pub fn check(repo_path: &str, format: &str, strict: bool) -> Result<()> {
-    let path = Path::new(repo_path).canonicalize()
+    let path = Path::new(repo_path)
+        .canonicalize()
         .unwrap_or_else(|_| Path::new(repo_path).to_path_buf());
 
-    println!("{}", format!("🔍 Scanning repository: {}", path.display()).cyan().bold());
+    println!(
+        "{}",
+        format!("🔍 Scanning repository: {}", path.display())
+            .cyan()
+            .bold()
+    );
     println!();
 
     // Run validators
@@ -67,9 +73,18 @@ fn output_text(report: &ComplianceReport) -> Result<()> {
     println!("{}", "  Compliance Report".bold().cyan());
     println!("{}", "═".repeat(70).cyan());
     println!();
-    println!("  Repository: {}", report.repo_path.display().to_string().white().bold());
-    println!("  Files scanned: {}", report.total_files_scanned.to_string().white());
-    println!("  Total violations: {}", report.violations.len().to_string().white());
+    println!(
+        "  Repository: {}",
+        report.repo_path.display().to_string().white().bold()
+    );
+    println!(
+        "  Files scanned: {}",
+        report.total_files_scanned.to_string().white()
+    );
+    println!(
+        "  Total violations: {}",
+        report.violations.len().to_string().white()
+    );
     println!();
 
     if report.violations.is_empty() {
@@ -85,7 +100,12 @@ fn output_text(report: &ComplianceReport) -> Result<()> {
     }
 
     // Print violations by severity
-    for severity in [Severity::Critical, Severity::Error, Severity::Warning, Severity::Info] {
+    for severity in [
+        Severity::Critical,
+        Severity::Error,
+        Severity::Warning,
+        Severity::Info,
+    ] {
         if let Some(violations) = by_severity.get(&severity) {
             let severity_str = match severity {
                 Severity::Critical => "CRITICAL".red().bold(),
@@ -94,11 +114,17 @@ fn output_text(report: &ComplianceReport) -> Result<()> {
                 Severity::Info => "INFO".blue(),
             };
 
-            println!("{} {} {}", "─".repeat(3).dimmed(), severity_str, "─".repeat(60).dimmed());
+            println!(
+                "{} {} {}",
+                "─".repeat(3).dimmed(),
+                severity_str,
+                "─".repeat(60).dimmed()
+            );
             println!();
 
             for v in violations {
-                let file_display = v.file_path
+                let file_display = v
+                    .file_path
                     .strip_prefix(&report.repo_path)
                     .unwrap_or(&v.file_path)
                     .display();
@@ -110,7 +136,11 @@ fn output_text(report: &ComplianceReport) -> Result<()> {
                 };
 
                 println!("  {} {}", "▸".dimmed(), location);
-                println!("    {} {}", format!("[{}]", v.rule_id).yellow(), v.message.dimmed());
+                println!(
+                    "    {} {}",
+                    format!("[{}]", v.rule_id).yellow(),
+                    v.message.dimmed()
+                );
 
                 if let Some(suggestion) = &v.suggestion {
                     println!("    {} {}", "💡".dimmed(), suggestion.dimmed().italic());
@@ -129,16 +159,20 @@ fn output_text(report: &ComplianceReport) -> Result<()> {
 fn output_json(report: &ComplianceReport) -> Result<()> {
     use serde_json::json;
 
-    let violations_json: Vec<_> = report.violations.iter().map(|v| {
-        json!({
-            "file": v.file_path.display().to_string(),
-            "line": v.line_number,
-            "rule_id": v.rule_id,
-            "severity": format!("{:?}", v.severity),
-            "message": v.message,
-            "suggestion": v.suggestion,
+    let violations_json: Vec<_> = report
+        .violations
+        .iter()
+        .map(|v| {
+            json!({
+                "file": v.file_path.display().to_string(),
+                "line": v.line_number,
+                "rule_id": v.rule_id,
+                "severity": format!("{:?}", v.severity),
+                "message": v.message,
+                "suggestion": v.suggestion,
+            })
         })
-    }).collect();
+        .collect();
 
     let output = json!({
         "repo_path": report.repo_path.display().to_string(),
@@ -156,9 +190,18 @@ fn calculate_exit_code(report: &ComplianceReport, strict: bool) -> i32 {
         return 0; // Success
     }
 
-    let has_critical = report.violations.iter().any(|v| matches!(v.severity, Severity::Critical));
-    let has_errors = report.violations.iter().any(|v| matches!(v.severity, Severity::Error));
-    let has_warnings = report.violations.iter().any(|v| matches!(v.severity, Severity::Warning));
+    let has_critical = report
+        .violations
+        .iter()
+        .any(|v| matches!(v.severity, Severity::Critical));
+    let has_errors = report
+        .violations
+        .iter()
+        .any(|v| matches!(v.severity, Severity::Error));
+    let has_warnings = report
+        .violations
+        .iter()
+        .any(|v| matches!(v.severity, Severity::Warning));
 
     if has_critical {
         3 // Critical violations

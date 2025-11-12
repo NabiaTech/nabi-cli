@@ -5,13 +5,12 @@
 /// - Hook execution (pre-index, post-index, pre-query)
 /// - Symbol querying and analysis
 /// - Federation integration with manifests
-
-use anyhow::{Result, Context, anyhow};
-use serde::{Serialize, Deserialize};
-use std::path::{Path, PathBuf};
-use std::fs;
-use std::process::Command;
+use anyhow::{anyhow, Context, Result};
 use colored::*;
+use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Symbol {
@@ -56,8 +55,7 @@ pub fn get_cache_dir() -> Result<PathBuf> {
     let cache_dir = if let Ok(xdg_cache) = std::env::var("XDG_CACHE_HOME") {
         PathBuf::from(xdg_cache)
     } else {
-        let home = std::env::var("HOME")
-            .context("HOME environment variable not set")?;
+        let home = std::env::var("HOME").context("HOME environment variable not set")?;
         PathBuf::from(home).join(".cache")
     };
 
@@ -71,8 +69,7 @@ pub fn get_state_dir() -> Result<PathBuf> {
     let state_dir = if let Ok(xdg_state) = std::env::var("XDG_STATE_HOME") {
         PathBuf::from(xdg_state)
     } else {
-        let home = std::env::var("HOME")
-            .context("HOME environment variable not set")?;
+        let home = std::env::var("HOME").context("HOME environment variable not set")?;
         PathBuf::from(home).join(".local").join("state")
     };
 
@@ -114,7 +111,10 @@ pub fn run_pre_index_hook(repo_path: &str, language: &str) -> Result<()> {
         .join("codegraph-pre-index.sh");
 
     if !hook_path.exists() {
-        eprintln!("{}", format!("⚠  Pre-index hook not found: {}", hook_path.display()).yellow());
+        eprintln!(
+            "{}",
+            format!("⚠  Pre-index hook not found: {}", hook_path.display()).yellow()
+        );
         return Ok(());
     }
 
@@ -146,7 +146,10 @@ pub fn run_post_index_hook(repo_path: &str, index_path: &str) -> Result<()> {
         .join("codegraph-post-index.sh");
 
     if !hook_path.exists() {
-        eprintln!("{}", format!("⚠  Post-index hook not found: {}", hook_path.display()).yellow());
+        eprintln!(
+            "{}",
+            format!("⚠  Post-index hook not found: {}", hook_path.display()).yellow()
+        );
         return Ok(());
     }
 
@@ -219,8 +222,10 @@ pub fn generate_index(repo_path: &str, language: &str) -> Result<CodegraphIndex>
         if let Some(parent) = file_path.parent() {
             if let Some(parent_name) = parent.file_name() {
                 let parent_str = parent_name.to_string_lossy();
-                if parent_str.starts_with('.') ||
-                   ["node_modules", "target", "__pycache__", ".venv"].contains(&parent_str.as_ref()) {
+                if parent_str.starts_with('.')
+                    || ["node_modules", "target", "__pycache__", ".venv"]
+                        .contains(&parent_str.as_ref())
+                {
                     continue;
                 }
             }
@@ -251,7 +256,8 @@ pub fn generate_index(repo_path: &str, language: &str) -> Result<CodegraphIndex>
         }
     }
 
-    let repo_name = path.file_name()
+    let repo_name = path
+        .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("unknown")
         .to_string();
@@ -276,9 +282,11 @@ fn parse_rust_symbols(symbols: &mut Vec<Symbol>, file_path: &Path, content: &str
 
         // Detect public functions
         if trimmed.starts_with("pub fn ") {
-            if let Some(name) = trimmed.strip_prefix("pub fn ")
+            if let Some(name) = trimmed
+                .strip_prefix("pub fn ")
                 .and_then(|s| s.split('(').next())
-                .map(|s| s.trim()) {
+                .map(|s| s.trim())
+            {
                 symbols.push(Symbol {
                     id: format!("fn_{}", line_num),
                     name: name.to_string(),
@@ -292,9 +300,11 @@ fn parse_rust_symbols(symbols: &mut Vec<Symbol>, file_path: &Path, content: &str
 
         // Detect structs
         if trimmed.starts_with("pub struct ") {
-            if let Some(name) = trimmed.strip_prefix("pub struct ")
+            if let Some(name) = trimmed
+                .strip_prefix("pub struct ")
                 .and_then(|s| s.split(|c| c == '{' || c == '(').next())
-                .map(|s| s.trim()) {
+                .map(|s| s.trim())
+            {
                 symbols.push(Symbol {
                     id: format!("struct_{}", line_num),
                     name: name.to_string(),
@@ -308,9 +318,11 @@ fn parse_rust_symbols(symbols: &mut Vec<Symbol>, file_path: &Path, content: &str
 
         // Detect traits
         if trimmed.starts_with("pub trait ") {
-            if let Some(name) = trimmed.strip_prefix("pub trait ")
+            if let Some(name) = trimmed
+                .strip_prefix("pub trait ")
                 .and_then(|s| s.split(|c| c == '{' || c == ':').next())
-                .map(|s| s.trim()) {
+                .map(|s| s.trim())
+            {
                 symbols.push(Symbol {
                     id: format!("trait_{}", line_num),
                     name: name.to_string(),
@@ -335,9 +347,11 @@ fn parse_python_symbols(symbols: &mut Vec<Symbol>, file_path: &Path, content: &s
 
         // Detect class definitions
         if trimmed.starts_with("class ") {
-            if let Some(name) = trimmed.strip_prefix("class ")
+            if let Some(name) = trimmed
+                .strip_prefix("class ")
                 .and_then(|s| s.split(|c| c == '(' || c == ':').next())
-                .map(|s| s.trim()) {
+                .map(|s| s.trim())
+            {
                 symbols.push(Symbol {
                     id: format!("class_{}", line_num),
                     name: name.to_string(),
@@ -351,10 +365,16 @@ fn parse_python_symbols(symbols: &mut Vec<Symbol>, file_path: &Path, content: &s
 
         // Detect function definitions (top-level and class methods)
         if trimmed.starts_with("def ") && !trimmed.starts_with("def _") {
-            if let Some(name) = trimmed.strip_prefix("def ")
+            if let Some(name) = trimmed
+                .strip_prefix("def ")
                 .and_then(|s| s.split('(').next())
-                .map(|s| s.trim()) {
-                let visibility = if line.starts_with("def _") { "private" } else { "public" };
+                .map(|s| s.trim())
+            {
+                let visibility = if line.starts_with("def _") {
+                    "private"
+                } else {
+                    "public"
+                };
                 symbols.push(Symbol {
                     id: format!("fn_{}", line_num),
                     name: name.to_string(),
@@ -377,13 +397,11 @@ pub fn load_index(index_path: &str) -> Result<CodegraphIndex> {
     let symbols_file = path.join("symbols.json");
 
     let metadata: IndexMetadata = serde_json::from_str(
-        &fs::read_to_string(&metadata_file)
-            .context("Failed to read metadata.json")?
+        &fs::read_to_string(&metadata_file).context("Failed to read metadata.json")?,
     )?;
 
     let symbols: Vec<Symbol> = serde_json::from_str(
-        &fs::read_to_string(&symbols_file)
-            .context("Failed to read symbols.json")?
+        &fs::read_to_string(&symbols_file).context("Failed to read symbols.json")?,
     )?;
 
     Ok(CodegraphIndex { metadata, symbols })
@@ -398,22 +416,20 @@ pub fn save_index(index_path: &str, index: &CodegraphIndex) -> Result<()> {
     let metadata_file = path.join("metadata.json");
     fs::write(
         &metadata_file,
-        serde_json::to_string_pretty(&index.metadata)?
+        serde_json::to_string_pretty(&index.metadata)?,
     )?;
 
     // Write symbols
     let symbols_file = path.join("symbols.json");
-    fs::write(
-        &symbols_file,
-        serde_json::to_string_pretty(&index.symbols)?
-    )?;
+    fs::write(&symbols_file, serde_json::to_string_pretty(&index.symbols)?)?;
 
     Ok(())
 }
 
 /// Find a symbol by name
 pub fn find_symbol<'a>(index: &'a CodegraphIndex, name: &str) -> Vec<&'a Symbol> {
-    index.symbols
+    index
+        .symbols
         .iter()
         .filter(|s| s.name.contains(name))
         .collect()
@@ -422,7 +438,8 @@ pub fn find_symbol<'a>(index: &'a CodegraphIndex, name: &str) -> Vec<&'a Symbol>
 /// Find all references (for now, simple substring matching in symbol names)
 /// In a real implementation, this would use call graph analysis
 pub fn find_references<'a>(index: &'a CodegraphIndex, symbol: &str) -> Vec<&'a Symbol> {
-    index.symbols
+    index
+        .symbols
         .iter()
         .filter(|s| s.name.contains(symbol) || symbol.contains(&s.name))
         .collect()
@@ -431,13 +448,15 @@ pub fn find_references<'a>(index: &'a CodegraphIndex, symbol: &str) -> Vec<&'a S
 /// Find related symbols (symbols that might be related by usage)
 pub fn find_related<'a>(index: &'a CodegraphIndex, symbol: &str, _depth: usize) -> Vec<&'a Symbol> {
     // Simple implementation: find symbols in the same file or with similar names
-    let matching = index.symbols
+    let matching = index
+        .symbols
         .iter()
         .filter(|s| s.name.contains(symbol))
         .next();
 
     if let Some(main_symbol) = matching {
-        return index.symbols
+        return index
+            .symbols
             .iter()
             .filter(|s| s.file == main_symbol.file || s.name.len() < symbol.len() + 10)
             .collect();

@@ -1,9 +1,9 @@
-use super::{Validator, Violation, Severity};
-use std::path::Path;
+use super::{Severity, Validator, Violation};
 use anyhow::Result;
 use regex::Regex;
-use walkdir::WalkDir;
 use std::fs;
+use std::path::Path;
+use walkdir::WalkDir;
 
 pub struct PathValidator {
     hardcoded_pattern: Regex,
@@ -41,7 +41,13 @@ impl Validator for PathValidator {
             if let Some(ext) = path.extension() {
                 if matches!(
                     ext.to_str(),
-                    Some("md") | Some("toml") | Some("yaml") | Some("yml") | Some("sh") | Some("bash") | Some("zsh")
+                    Some("md")
+                        | Some("toml")
+                        | Some("yaml")
+                        | Some("yml")
+                        | Some("sh")
+                        | Some("bash")
+                        | Some("zsh")
                 ) {
                     if let Ok(file_violations) = self.check_file(path) {
                         violations.extend(file_violations);

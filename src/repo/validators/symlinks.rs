@@ -1,6 +1,6 @@
-use super::{Validator, Violation, Severity};
-use std::path::Path;
+use super::{Severity, Validator, Violation};
 use anyhow::Result;
+use std::path::Path;
 use walkdir::WalkDir;
 
 pub struct SymlinkValidator;
@@ -67,10 +67,7 @@ impl Validator for SymlinkValidator {
                             line_number: None,
                             rule_id: "hardcoded_symlink_target".to_string(),
                             severity: Severity::Warning,
-                            message: format!(
-                                "Symlink target uses hardcoded path: {}",
-                                target_str
-                            ),
+                            message: format!("Symlink target uses hardcoded path: {}", target_str),
                             suggestion: Some(format!(
                                 "Use portable path: {} (e.g., as symlink source)",
                                 Self::suggest_portable_path(&target_str)
@@ -90,7 +87,7 @@ impl Validator for SymlinkValidator {
                                 target_str
                             ),
                             suggestion: Some(
-                                "Either fix the symlink target or remove this symlink".to_string()
+                                "Either fix the symlink target or remove this symlink".to_string(),
                             ),
                         });
                     }
