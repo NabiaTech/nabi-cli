@@ -6,7 +6,7 @@
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use std::fmt;
 use std::path::{Path, PathBuf};
-use crate::commands::{kernel, tmux};
+use crate::commands::{events, kernel, tmux};
 
 /// nabi - Unified Federation Command Gateway
 ///
@@ -135,6 +135,11 @@ pub enum Commands {
     Kernel {
         #[command(subcommand)]
         command: kernel::KernelCommands,
+    },
+    /// Federation event bus (temporal awareness for Claude sessions)
+    Events {
+        #[command(subcommand)]
+        command: events::EventsCommands,
     },
     Hooks {
         #[command(subcommand)]
@@ -359,6 +364,42 @@ pub enum RepoCommands {
     Graph {
         #[command(subcommand)]
         action: GraphActions,
+    },
+    /// Codegraph hook management (deploy, validate, show configuration)
+    Codegraph {
+        #[command(subcommand)]
+        command: CodegraphCommands,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum CodegraphCommands {
+    /// Deploy hooks from schema: render templates and generate executable scripts
+    ///
+    /// This command implements Phase 2 of the schema-driven hook system.
+    /// It reads hook template configurations from ~/.config/nabi/codegraph.toml,
+    /// renders Handlebars templates with configured variables, and deploys
+    /// generated scripts to ~/.local/share/nabi/bin/ with proper permissions.
+    DeployHooks {
+        /// Verbose output (show each hook as it's deployed)
+        #[arg(short, long)]
+        verbose: bool,
+
+        /// Config path (defaults to ~/.config/nabi/codegraph.toml)
+        #[arg(long)]
+        config: Option<String>,
+    },
+    /// Validate deployed hooks (check syntax, permissions, execution)
+    ValidateHooks {
+        /// Output format (text, json)
+        #[arg(short, long, default_value = "text")]
+        format: String,
+    },
+    /// Show current hook configuration from schema
+    ShowHooks {
+        /// Show full template contents
+        #[arg(long)]
+        templates: bool,
     },
 }
 

@@ -33,5 +33,9 @@ pub fn handle_repo(command: RepoCommands) -> Result<()> {
         RepoCommands::Graph { action } => {
             handle_graph(action)
         }
+        RepoCommands::Codegraph { command: _ } => {
+            // Codegraph commands are handled via cli.rs routing, not here
+            anyhow::bail!("Codegraph command should be handled through handlers")
+        }
     }
 }

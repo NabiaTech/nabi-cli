@@ -1,0 +1,70 @@
+#!/bin/bash
+# Codegraph Pre-Query Validation Hook (Optional)
+# Auto-generated from codegraph.toml schema
+# Generated: {{generated_at}}
+#
+# Validates index freshness before querying
+#
+# Usage: codegraph-pre-query.sh <repo_path>
+# Exit Codes:
+#   0 → Index is fresh and ready
+#   1 → Index not found
+#   2 → Index is stale (older than {{freshness_hours}} hours)
+
+REPO_PATH="${1:-.}"
+
+# Configuration (from schema)
+FRESHNESS_HOURS={{freshness_hours}}
+CHECK_ENABLED={{check_enabled}}
+
+# Only perform check if enabled in schema
+if [[ "$CHECK_ENABLED" != "true" ]]; then
+    exit 0
+fi
+
+# Ensure repo path is absolute
+if [[ ! "$REPO_PATH" = /* ]]; then
+    REPO_PATH="$(cd "$REPO_PATH" 2>/dev/null && pwd)" || REPO_PATH="."
+fi
+
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}"
+CODEGRAPH_DIR="$STATE_DIR/nabi/codegraph"
+
+# Find index for this repository
+REPO_NAME=$(basename "$REPO_PATH")
+
+# Look for any index matching this repo
+MATCHING_INDEX=$(find "$CODEGRAPH_DIR" -maxdepth 1 -type d -name "${REPO_NAME}-*" 2>/dev/null | head -1)
+
+if [[ -z "$MATCHING_INDEX" ]]; then
+    echo "⚠ No index found for $REPO_NAME" >&2
+    exit 1
+fi
+
+# Check freshness (configurable hour window)
+METADATA_FILE="$MATCHING_INDEX/metadata.json"
+if [[ ! -f "$METADATA_FILE" ]]; then
+    echo "⚠ Index metadata not found" >&2
+    exit 1
+fi
+
+# Extract index creation time
+CREATED_TIME=$(jq -r '.created' "$METADATA_FILE" 2>/dev/null)
+if [[ -z "$CREATED_TIME" ]]; then
+    echo "⚠ Could not determine index age" >&2
+    exit 2
+fi
+
+# Compare timestamps
+CREATED_EPOCH=$(date -jf "%Y-%m-%dT%H:%M:%S%z" "$CREATED_TIME" +%s 2>/dev/null || date +%s)
+NOW_EPOCH=$(date +%s)
+AGE_SECONDS=$((NOW_EPOCH - CREATED_EPOCH))
+AGE_HOURS=$((AGE_SECONDS / 3600))
+
+# Warn if older than configured freshness window
+if [[ $AGE_HOURS -gt $FRESHNESS_HOURS ]]; then
+    echo "⚠ Index is ${AGE_HOURS} hours old (freshness threshold: {{freshness_hours}} hours, consider refreshing)" >&2
+    # Non-blocking - still proceed with query
+fi
+
+exit 0

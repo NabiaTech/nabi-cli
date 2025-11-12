@@ -22,6 +22,7 @@ mod repo;
 mod routing;
 mod spec;
 mod utils;
+use commands::events;
 use commands::kernel;
 use commands::port;
 use commands::tmux;
@@ -169,6 +170,11 @@ enum Commands {
     Kernel {
         #[command(subcommand)]
         command: kernel::KernelCommands,
+    },
+    /// Federation event bus (temporal awareness for Claude sessions)
+    Events {
+        #[command(subcommand)]
+        command: events::EventsCommands,
     },
     Hooks {
         #[command(subcommand)]
@@ -517,6 +523,42 @@ enum RepoCommands {
     Graph {
         #[command(subcommand)]
         action: GraphActions,
+    },
+    /// Codegraph hook management (deploy, validate, show configuration)
+    Codegraph {
+        #[command(subcommand)]
+        command: CodegraphCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum CodegraphCommands {
+    /// Deploy hooks from schema: render templates and generate executable scripts
+    ///
+    /// This command implements Phase 2 of the schema-driven hook system.
+    /// It reads hook template configurations from ~/.config/nabi/codegraph.toml,
+    /// renders Handlebars templates with configured variables, and deploys
+    /// generated scripts to ~/.local/share/nabi/bin/ with proper permissions.
+    DeployHooks {
+        /// Verbose output (show each hook as it's deployed)
+        #[arg(short, long)]
+        verbose: bool,
+
+        /// Config path (defaults to ~/.config/nabi/codegraph.toml)
+        #[arg(long)]
+        config: Option<String>,
+    },
+    /// Validate deployed hooks (check syntax, permissions, execution)
+    ValidateHooks {
+        /// Output format (text, json)
+        #[arg(short, long, default_value = "text")]
+        format: String,
+    },
+    /// Show current hook configuration from schema
+    ShowHooks {
+        /// Show full template contents
+        #[arg(long)]
+        templates: bool,
     },
 }
 
@@ -1472,6 +1514,7 @@ fn main() -> Result<()> {
         Commands::Port { command } => handle_port(command),
         Commands::Tmux { command } => tmux::handle_tmux_commands(command),
         Commands::Kernel { command } => kernel::handle_kernel_commands(command),
+        Commands::Events { command } => events::handle_events_commands(command),
         Commands::Hooks { command } => handle_hooks(command),
         Commands::Mode { mode } => handle_mode(mode),
         Commands::Riff { args } => handle_riff(args),
@@ -1697,6 +1740,7 @@ fn handle_repo(command: RepoCommands) -> Result<()> {
             format,
         } => repo::analyze(&repo_path, lang.as_deref(), force, &format),
         RepoCommands::Graph { action } => handle_graph(action),
+        RepoCommands::Codegraph { command } => handle_codegraph(command),
     }
 }
 
@@ -1708,6 +1752,58 @@ fn handle_analyze(command: AnalyzeCommands) -> Result<()> {
             force,
             format,
         } => repo::analyze(&repo_path, lang.as_deref(), force, &format),
+    }
+}
+
+fn handle_codegraph(command: CodegraphCommands) -> Result<()> {
+    match command {
+        CodegraphCommands::DeployHooks { verbose, config } => {
+            // Resolve config path (default to ~/.config/nabi/codegraph.toml)
+            let config_path = if let Some(custom_path) = config {
+                PathBuf::from(custom_path)
+            } else {
+                let home = std::env::var("HOME").context("HOME environment variable not set")?;
+                PathBuf::from(home)
+                    .join(".config")
+                    .join("nabi")
+                    .join("codegraph.toml")
+            };
+
+            if !config_path.exists() {
+                eprintln!("Error: Configuration file not found: {}", config_path.display());
+                return Err(anyhow::anyhow!(
+                    "Config file not found at {}",
+                    config_path.display()
+                ));
+            }
+
+            // Load configuration and deploy hooks
+            let deployment = repo::HookDeployment::from_toml(&config_path)?;
+            let stats = deployment.deploy(verbose)?;
+
+            if verbose {
+                println!(
+                    "\n✓ Hook deployment complete: {} deployed, {} skipped",
+                    stats.deployed, stats.skipped
+                );
+            } else {
+                println!(
+                    "✓ {} hooks deployed to {}",
+                    stats.deployed,
+                    deployment.output_dir.display()
+                );
+            }
+
+            Ok(())
+        }
+        CodegraphCommands::ValidateHooks { format: _format } => {
+            println!("⚠ Hook validation not yet implemented");
+            Ok(())
+        }
+        CodegraphCommands::ShowHooks { templates: _templates } => {
+            println!("⚠ Hook configuration display not yet implemented");
+            Ok(())
+        }
     }
 }
 
