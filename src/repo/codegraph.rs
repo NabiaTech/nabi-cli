@@ -1,7 +1,7 @@
 /// Codegraph module - Index management and symbol graph operations
 ///
 /// Handles:
-/// - Index creation and management (in ~/.cache/nabi/codebase-graphs/)
+/// - Index creation and management (in ~/.local/state/nabi/codegraph/)
 /// - Hook execution (pre-index, post-index, pre-query)
 /// - Symbol querying and analysis
 /// - Federation integration with manifests
@@ -100,15 +100,24 @@ pub fn detect_language(repo_path: &str) -> Result<String> {
     Ok("rust".to_string())
 }
 
+/// Get the hooks directory (XDG_DATA_HOME/nabi/bin)
+fn get_hooks_dir() -> Result<PathBuf> {
+    let data_dir = if let Ok(xdg_data) = std::env::var("XDG_DATA_HOME") {
+        PathBuf::from(xdg_data)
+    } else {
+        let home = std::env::var("HOME").context("HOME environment variable not set")?;
+        PathBuf::from(home).join(".local").join("share")
+    };
+
+    let hooks_dir = data_dir.join("nabi").join("bin");
+    fs::create_dir_all(&hooks_dir)?;
+    Ok(hooks_dir)
+}
+
 /// Execute the pre-index validation hook
 pub fn run_pre_index_hook(repo_path: &str, language: &str) -> Result<()> {
-    let config_dir = std::env::var("XDG_CONFIG_HOME")
-        .unwrap_or_else(|_| format!("{}/.config", std::env::var("HOME").unwrap_or_default()));
-
-    let hook_path = PathBuf::from(&config_dir)
-        .join("nabi")
-        .join("scripts")
-        .join("codegraph-pre-index.sh");
+    let hooks_dir = get_hooks_dir()?;
+    let hook_path = hooks_dir.join("codegraph-pre-index.sh");
 
     if !hook_path.exists() {
         eprintln!(
@@ -137,13 +146,8 @@ pub fn run_pre_index_hook(repo_path: &str, language: &str) -> Result<()> {
 
 /// Execute the post-index finalization hook
 pub fn run_post_index_hook(repo_path: &str, index_path: &str) -> Result<()> {
-    let config_dir = std::env::var("XDG_CONFIG_HOME")
-        .unwrap_or_else(|_| format!("{}/.config", std::env::var("HOME").unwrap_or_default()));
-
-    let hook_path = PathBuf::from(&config_dir)
-        .join("nabi")
-        .join("scripts")
-        .join("codegraph-post-index.sh");
+    let hooks_dir = get_hooks_dir()?;
+    let hook_path = hooks_dir.join("codegraph-post-index.sh");
 
     if !hook_path.exists() {
         eprintln!(
@@ -173,13 +177,8 @@ pub fn run_post_index_hook(repo_path: &str, index_path: &str) -> Result<()> {
 
 /// Execute the pre-query validation hook
 pub fn run_pre_query_hook(repo_path: &str) -> Result<()> {
-    let config_dir = std::env::var("XDG_CONFIG_HOME")
-        .unwrap_or_else(|_| format!("{}/.config", std::env::var("HOME").unwrap_or_default()));
-
-    let hook_path = PathBuf::from(&config_dir)
-        .join("nabi")
-        .join("scripts")
-        .join("codegraph-pre-query.sh");
+    let hooks_dir = get_hooks_dir()?;
+    let hook_path = hooks_dir.join("codegraph-pre-query.sh");
 
     if !hook_path.exists() {
         // Pre-query hook is optional for MVP
