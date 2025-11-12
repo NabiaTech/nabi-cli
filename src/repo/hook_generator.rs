@@ -267,9 +267,29 @@ fn get_hooks_output_dir() -> Result<PathBuf> {
     Ok(data_dir.join("nabi").join("bin"))
 }
 
-/// Expand tilde and environment variables in path
+/// Expand tilde and environment variables in path (XDG-compliant)
 fn expand_tilde(path: &str) -> PathBuf {
     let mut expanded = path.to_string();
+
+    // Expand XDG variables first (these depend on HOME)
+    if let Some(home) = dirs::home_dir() {
+        let home_str = home.to_string_lossy();
+
+        // ${XDG_DATA_HOME} → ~/.local/share or $XDG_DATA_HOME
+        let xdg_data = std::env::var("XDG_DATA_HOME")
+            .unwrap_or_else(|_| format!("{}/.local/share", home_str));
+        expanded = expanded.replace("${XDG_DATA_HOME}", &xdg_data);
+
+        // ${XDG_CONFIG_HOME} → ~/.config or $XDG_CONFIG_HOME
+        let xdg_config = std::env::var("XDG_CONFIG_HOME")
+            .unwrap_or_else(|_| format!("{}/.config", home_str));
+        expanded = expanded.replace("${XDG_CONFIG_HOME}", &xdg_config);
+
+        // ${XDG_STATE_HOME} → ~/.local/state or $XDG_STATE_HOME
+        let xdg_state = std::env::var("XDG_STATE_HOME")
+            .unwrap_or_else(|_| format!("{}/.local/state", home_str));
+        expanded = expanded.replace("${XDG_STATE_HOME}", &xdg_state);
+    }
 
     // Expand ${HOME}
     if let Ok(home) = std::env::var("HOME") {
