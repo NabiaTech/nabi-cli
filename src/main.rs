@@ -26,6 +26,8 @@ use commands::events;
 use commands::kernel;
 use commands::port;
 use commands::tmux;
+use cli::AuraCommands;
+use handlers::aura::handle_aura;
 use paths::NabiPaths;
 
 /// nabi - Unified Federation Command Gateway
@@ -120,6 +122,9 @@ enum Commands {
         /// Confidence level (0-1)
         #[arg(long)]
         confidence: Option<f32>,
+        /// Scan all federation directories (quick tree overview)
+        #[arg(long)]
+        all: bool,
     },
     /// File watching and real-time classification
     Watch {
@@ -800,21 +805,7 @@ enum ForgeCommands {
     List,
 }
 
-#[derive(Subcommand)]
-enum AuraCommands {
-    /// List all AURAs
-    List,
-    /// Show AURA details
-    Show {
-        /// AURA identifier
-        name: String,
-    },
-    /// Create a new AURA
-    Create {
-        /// AURA name
-        name: String,
-    },
-}
+// AuraCommands moved to cli.rs
 
 #[derive(Subcommand)]
 enum ConfigureCommands {
@@ -1504,7 +1495,8 @@ fn main() -> Result<()> {
             path,
             tags,
             confidence,
-        } => handle_scan(path, tags, confidence),
+            all,
+        } => handle_scan(path, tags, confidence, all),
         Commands::Watch { path } => handle_watch(path),
         Commands::Aura { command } => handle_aura(command),
         Commands::Configure { command } => handle_configure(command),
@@ -2785,7 +2777,17 @@ fn handle_forge(command: ForgeCommands) -> Result<()> {
     }
 }
 
-fn handle_scan(path: Option<String>, tags: Option<String>, confidence: Option<f32>) -> Result<()> {
+fn handle_scan(
+    path: Option<String>,
+    tags: Option<String>,
+    confidence: Option<f32>,
+    all: bool,
+) -> Result<()> {
+    // If --all flag is set, run tree scan of federation directories
+    if all {
+        return handle_scan_all();
+    }
+
     println!("{}", "🔍 Scanning filesystem...".cyan().bold());
     let mut args = vec!["scan".to_string()];
     if let Some(p) = path {
@@ -2804,6 +2806,110 @@ fn handle_scan(path: Option<String>, tags: Option<String>, confidence: Option<f3
     route_to_python_cli(&arg_refs)
 }
 
+fn handle_scan_all() -> Result<()> {
+    println!("{}", "🔍 Scanning all federation directories...".cyan().bold());
+
+    // Expand home directory paths
+    let home = std::env::var("HOME").context("Could not determine HOME directory")?;
+
+    // Define directories to scan
+    let mut dirs = vec![
+        format!("{}/nabia", home),
+        format!("{}/.config/nabi", home),
+        format!("{}/legen", home),
+        format!("{}/MemRiff.deprecated", home),
+        format!("{}/.claude/agents", home),
+        format!("{}/.claude/commands", home),
+        format!("{}/.claude/output-styles", home),
+        format!("{}/.claude/skills", home),
+        format!("{}/.nabi", home),
+    ];
+
+    // Add LaunchAgents *nabi* items (glob expansion)
+    let launchagents_dir = format!("{}/Library/LaunchAgents", home);
+    if let Ok(entries) = std::fs::read_dir(&launchagents_dir) {
+        for entry in entries.flatten() {
+            if let Some(filename) = entry.file_name().to_str() {
+                if filename.contains("nabi") {
+                    if let Some(path) = entry.path().to_str() {
+                        dirs.push(path.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    // Define exclusion patterns for tree command
+    let exclusions = vec![
+        "target",
+        "*.o",
+        "*.d",
+        "deps",
+        "node_modules",
+        ".venv",
+        "*.pyc",
+        "*.log",
+        "crates",
+        "zed/*",
+        "deprecated*",
+        "*.deprecated",
+        "*archive*/",
+        "*fumadocs.old*/",
+        "*backup*/",
+        "*checkpoint*/",
+        "logs",
+        "__pycache__",
+        "htmlcov",
+    ];
+
+    // Build tree command
+    let mut cmd = std::process::Command::new("tree");
+    cmd.arg("-I")
+        .arg(exclusions.join("|"))
+        .arg("-L")
+        .arg("3")
+        .arg("-C")
+        .arg("-i")
+        .arg("-f");
+
+    // Add all directories to scan
+    for dir in &dirs {
+        if std::path::Path::new(dir).exists() {
+            cmd.arg(dir);
+        }
+    }
+
+    println!();
+    let output = cmd
+        .output()
+        .context("Failed to execute tree command")?;
+
+    // Print stdout
+    if !output.stdout.is_empty() {
+        print!("{}", String::from_utf8_lossy(&output.stdout));
+    }
+
+    // Print stderr if present (but don't fail on it)
+    if !output.stderr.is_empty() {
+        eprintln!("{}", String::from_utf8_lossy(&output.stderr));
+    }
+
+    // Tree command exit code 2 is OK (means some directories couldn't be read)
+    // Only fail on truly critical errors
+    if !output.status.success() && output.status.code() != Some(2) {
+        eprintln!(
+            "{}",
+            format!(
+                "⚠️  tree command returned non-zero exit code ({})",
+                output.status.code().unwrap_or(-1)
+            )
+            .yellow()
+        );
+    }
+
+    Ok(())
+}
+
 fn handle_watch(path: Option<String>) -> Result<()> {
     println!("{}", "👁  Watching filesystem...".cyan().bold());
     let mut args = vec!["watch".to_string()];
@@ -2815,22 +2921,7 @@ fn handle_watch(path: Option<String>) -> Result<()> {
     route_to_python_cli(&arg_refs)
 }
 
-fn handle_aura(command: AuraCommands) -> Result<()> {
-    match command {
-        AuraCommands::List => {
-            println!("{}", "📋 Listing AURAs...".cyan().bold());
-            route_to_python_cli(&["aura", "list"])
-        }
-        AuraCommands::Show { name } => {
-            println!("{}", format!("👁  Viewing AURA: {}...", name).cyan().bold());
-            route_to_python_cli(&["aura", "show", &name])
-        }
-        AuraCommands::Create { name } => {
-            println!("{}", format!("✨ Creating AURA: {}...", name).cyan().bold());
-            route_to_python_cli(&["aura", "create", &name])
-        }
-    }
-}
+// handle_aura moved to handlers/aura.rs
 
 fn handle_configure(command: ConfigureCommands) -> Result<()> {
     match command {
@@ -3016,6 +3107,26 @@ fn handle_agent(command: AgentKernelCommands) -> Result<()> {
 
     match command {
         AgentKernelCommands::Daemon { action } => {
+            // DEPRECATION WARNING
+            eprintln!();
+            eprintln!("{}", "⚠️  DEPRECATED COMMAND".yellow().bold());
+            eprintln!("{}", "━".repeat(60).yellow());
+            eprintln!();
+            eprintln!("{}", "  The command 'nabi agent daemon' is deprecated and will be removed in v0.2.0".yellow());
+            eprintln!();
+            eprintln!("{}", "  Please use 'nabi kernel daemon' instead:".bright_white());
+            eprintln!("    {} → {}", "nabi agent daemon start".red(), "nabi kernel daemon start".green());
+            eprintln!("    {} → {}", "nabi agent daemon stop".red(), "nabi kernel daemon stop".green());
+            eprintln!("    {} → {}", "nabi agent daemon restart".red(), "nabi kernel daemon restart".green());
+            eprintln!("    {} → {}", "nabi agent daemon status".red(), "nabi kernel daemon status".green());
+            eprintln!();
+            eprintln!("{}", "  Reason: 'nabi agent' semantically suggests individual agent control,".bright_black());
+            eprintln!("{}", "          but this command controls the NABIKernel orchestration daemon.".bright_black());
+            eprintln!();
+            eprintln!("{}", "━".repeat(60).yellow());
+            eprintln!();
+            std::thread::sleep(std::time::Duration::from_secs(2)); // Give user time to read warning
+
             let daemon_script = nabi_config.join("daemon");
             if !daemon_script.exists() {
                 eprintln!("{}", "❌ Agent daemon script not found".red().bold());
