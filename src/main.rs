@@ -26,7 +26,7 @@ use commands::events;
 use commands::kernel;
 use commands::port;
 use commands::tmux;
-use cli::AuraCommands;
+use cli::{AuraCommands, BackupCommands};
 use handlers::aura::handle_aura;
 use paths::NabiPaths;
 
@@ -151,6 +151,15 @@ enum Commands {
     Record {
         #[command(subcommand)]
         command: RecordCommands,
+    },
+    /// Backup and recovery operations (federation data protection)
+    ///
+    /// Comprehensive backup system with XDG-compliant storage, dual-format archiving
+    /// (ditto.zip for macOS fidelity + tar.tgz for portability), external drive support,
+    /// and NATS queue integration for federation-wide coordination.
+    Backup {
+        #[command(subcommand)]
+        command: BackupCommands,
     },
     /// NABIKernel agent operations (daemon, spawn, status)
     Agent {
@@ -1502,6 +1511,7 @@ fn main() -> Result<()> {
         Commands::Configure { command } => handle_configure(command),
         Commands::Db { command } => handle_db(command),
         Commands::Record { command } => handle_record(command),
+        Commands::Backup { command } => handle_backup(command),
         Commands::Agent { command } => handle_agent(command),
         Commands::Port { command } => handle_port(command),
         Commands::Tmux { command } => tmux::handle_tmux_commands(command),
@@ -3074,6 +3084,11 @@ fn load_kernel_config() -> Result<KernelConfig> {
         serde_json::from_str(&json_content).context("Failed to parse kernel.json")?;
 
     Ok(config)
+}
+
+fn handle_backup(command: BackupCommands) -> Result<()> {
+    use handlers::backup::handle_backup as backup_handler;
+    backup_handler(command)
 }
 
 fn handle_agent(command: AgentKernelCommands) -> Result<()> {
