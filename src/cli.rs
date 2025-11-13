@@ -585,6 +585,16 @@ pub enum AuraCommands {
         /// AURA name
         name: String,
     },
+    /// Switch to a different AURA
+    Switch {
+        /// AURA name to activate
+        name: String,
+        /// Force switch even if already active
+        #[arg(long)]
+        force: bool,
+    },
+    /// Show currently active AURA
+    Status,
 }
 
 #[derive(Subcommand)]
@@ -719,6 +729,63 @@ pub enum DaemonActions {
     Restart,
     /// Check daemon status
     Status,
+}
+
+#[derive(Subcommand)]
+pub enum BackupCommands {
+    /// Create a new backup of federation data
+    Create {
+        /// Backup mode: xdg (config + data + docs) or full (entire nabia)
+        #[arg(short, long, default_value = "xdg")]
+        mode: Option<String>,
+
+        /// Dry run mode (show what would be done)
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Explicitly specified targets (comma-separated paths)
+        #[arg(long)]
+        targets: Option<String>,
+
+        /// Backup to external drive if detected
+        #[arg(long)]
+        external: bool,
+    },
+
+    /// List available backups
+    List {
+        /// Output format: text or json
+        #[arg(short, long)]
+        format: Option<String>,
+    },
+
+    /// Restore from a previous backup
+    Restore {
+        /// Backup ID to restore from
+        backup_id: String,
+
+        /// Target restoration directory (defaults to original location)
+        #[arg(long)]
+        target: Option<String>,
+
+        /// Dry run mode (show what would be done)
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Show/validate backup configuration
+    Config {
+        /// Validate configuration file
+        #[arg(long)]
+        validate: bool,
+    },
+
+    /// Monitor NATS backup queue (federation coordination)
+    Queue {
+        /// Queue action: status, list, retry
+        #[arg(short, long)]
+        action: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
