@@ -8,7 +8,7 @@ home := env_var('HOME')
 # Placeholder paths - actual values resolved in recipe with bash eval
 cache_target_dir_base := 'nabi/nabi-cli/target'
 nabi_data_bin := home + '/.local/share/nabi/bin'
-zsh_completion_dir := home + '/.cache/zsh/completions'
+zsh_completion_dir := home + '/.zsh/completions'
 zsh_completion_file := zsh_completion_dir + '/_nabi'
 
 # Code signing identity (override with NABI_SIGNING_IDENTITY env var)
@@ -125,7 +125,7 @@ default:
     set -e
     XDG_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}"
     BINARY="${XDG_CACHE}/nabi/nabi-cli/target/release/nabi"
-    ZSH_COMP_DIR="${XDG_CACHE}/zsh/completions"
+    ZSH_COMP_DIR="$HOME/.zsh/completions"
     ZSH_COMP_FILE="${ZSH_COMP_DIR}/_nabi"
 
     mkdir -p "${ZSH_COMP_DIR}" .build
