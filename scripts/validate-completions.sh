@@ -24,18 +24,42 @@ set -u
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="$PROJECT_ROOT/.build"
 
-# Files - check both possible locations (justfile uses ~/.zsh, Makefile uses ~/.cache)
+# Schema-driven configuration (source of truth)
+CONFIG_FILE="${HOME}/.config/nabi/cli/completion-composition.toml"
+
+# Helper function to parse TOML values (simple key = "value" format)
+parse_toml_value() {
+    local key="$1"
+    local file="$2"
+    grep "^${key} = \"" "$file" | head -1 | cut -d'"' -f2
+}
+
+# Read paths from schema
+if [[ -f "$CONFIG_FILE" ]]; then
+    PRIMARY_OUTPUT=$(parse_toml_value "file" "$CONFIG_FILE")
+    FALLBACK_OUTPUT=$(parse_toml_value "fallback" "$CONFIG_FILE")
+
+    # Expand ~ to $HOME
+    PRIMARY_OUTPUT="${PRIMARY_OUTPUT//\~/$HOME}"
+    FALLBACK_OUTPUT="${FALLBACK_OUTPUT//\~/$HOME}"
+else
+    # Fallback if config doesn't exist (shouldn't happen in normal use)
+    PRIMARY_OUTPUT="$HOME/.zsh/completions/_nabi"
+    FALLBACK_OUTPUT="${XDG_CACHE_HOME:-$HOME/.cache}/zsh/completions/_nabi"
+fi
+
+# Files
 STATIC_FILE="$BUILD_DIR/_nabi_static"
 DYNAMIC_FILE="$PROJECT_ROOT/contrib/nabi-completions-dynamic.zsh"
 
-# Determine completion file location (try justfile location first, then Makefile location)
-if [[ -f "$HOME/.zsh/completions/_nabi" ]]; then
-    OUTPUT_FILE="$HOME/.zsh/completions/_nabi"
-elif [[ -f "${XDG_CACHE_HOME:-$HOME/.cache}/zsh/completions/_nabi" ]]; then
-    OUTPUT_FILE="${XDG_CACHE_HOME:-$HOME/.cache}/zsh/completions/_nabi"
+# Determine completion file location (try primary first, then fallback)
+if [[ -f "$PRIMARY_OUTPUT" ]]; then
+    OUTPUT_FILE="$PRIMARY_OUTPUT"
+elif [[ -f "$FALLBACK_OUTPUT" ]]; then
+    OUTPUT_FILE="$FALLBACK_OUTPUT"
 else
-    # Default to justfile location if neither exists yet (for fresh builds)
-    OUTPUT_FILE="$HOME/.zsh/completions/_nabi"
+    # Default to primary location if neither exists yet (for fresh builds)
+    OUTPUT_FILE="$PRIMARY_OUTPUT"
 fi
 
 # Colors
