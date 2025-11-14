@@ -74,6 +74,14 @@ pub enum Commands {
         #[command(subcommand)]
         command: RegisterCommands,
     },
+    /// Execute a registered tool (shorthand for `nabi tool exec`)
+    Exec {
+        /// Tool ID or command name
+        tool: String,
+        /// Arguments to pass to the tool
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     /// Filesystem scanning and metadata generation
     Scan {
         /// Path to scan
@@ -172,6 +180,14 @@ pub enum Commands {
         /// Shell to generate completions for
         #[arg(value_enum)]
         shell: clap_complete::Shell,
+
+        /// Output file (default: stdout)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+
+        /// Install to shell-specific location
+        #[arg(long)]
+        install: bool,
     },
     /// deckgen utilities (schema + trace fixtures)
     Deckgen {
@@ -1010,6 +1026,14 @@ pub enum ToolCommands {
         /// Filter by runtime (python, rust, bash, etc)
         #[arg(short, long)]
         runtime: Option<String>,
+    },
+    /// Execute a registered tool
+    Exec {
+        /// Tool ID or command name
+        tool: String,
+        /// Arguments to pass to the tool
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
     },
 }
 

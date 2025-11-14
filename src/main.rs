@@ -111,6 +111,14 @@ enum Commands {
         #[command(subcommand)]
         command: RegisterCommands,
     },
+    /// Execute a registered tool (shorthand for `nabi tool exec`)
+    Exec {
+        /// Tool ID or command name
+        tool: String,
+        /// Arguments to pass to the tool
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     /// Filesystem scanning and metadata generation
     ///
     /// Examples:
@@ -235,6 +243,14 @@ enum Commands {
         /// Shell to generate completions for
         #[arg(value_enum)]
         shell: CompletionShell,
+
+        /// Output file (default: stdout)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+
+        /// Install to shell-specific location
+        #[arg(long)]
+        install: bool,
     },
     /// deckgen utilities (schema + trace fixtures)
     #[command(
@@ -1357,6 +1373,14 @@ enum ToolCommands {
         #[arg(short, long)]
         runtime: Option<String>,
     },
+    /// Execute a registered tool
+    Exec {
+        /// Tool ID or command name
+        tool: String,
+        /// Arguments to pass to the tool
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1514,6 +1538,7 @@ fn main() -> Result<()> {
         Commands::Analyze { command } => handle_analyze(command),
         Commands::Tool { command } => handle_tool(command),
         Commands::Register { command } => handle_register(command),
+        Commands::Exec { tool, args } => handle_tool_exec(&tool, args),
         Commands::Scan {
             path,
             tags,
@@ -1539,7 +1564,7 @@ fn main() -> Result<()> {
         Commands::Riff { args } => handle_riff(args),
         Commands::Recover { command } => handle_recover(command),
         Commands::Health { command } => handle_health(command),
-        Commands::Completions { shell } => handle_completions(shell),
+        Commands::Completions { shell, output, install } => handle_completions(shell, output, install),
         Commands::Deckgen { command } => handle_deckgen(command),
         Commands::Doctor => handle_self(SelfCommands::Doctor),
         Commands::Migrate { command } => handle_migrate(command),
@@ -1834,7 +1859,20 @@ fn handle_tool(command: ToolCommands) -> Result<()> {
             status,
             runtime,
         } => list_tools(&format, status.as_deref(), runtime.as_deref()),
+        ToolCommands::Exec { tool, args } => handle_tool_exec(&tool, args),
     }
+}
+
+fn handle_tool_exec(tool_id: &str, args: Vec<String>) -> Result<()> {
+    println!("{}",format!("🔧 Executing tool: {}", tool_id).cyan().bold());
+
+    // For now, this is a placeholder. Full implementation would:
+    // 1. Load tool manifest from ~/.config/nabi/tools/{tool_id}.toml
+    // 2. Resolve the tool's venv/runtime
+    // 3. Construct and execute the command
+    // 4. Handle output and exit codes
+
+    Err(anyhow::anyhow!("Tool execution not yet implemented for '{}'", tool_id))
 }
 
 fn handle_register(command: RegisterCommands) -> Result<()> {
@@ -2620,9 +2658,121 @@ fn print_spec_markdown(entries: &[SpecEntry]) {
     }
 }
 
-fn handle_completions(shell: CompletionShell) -> Result<()> {
+// Dynamic completion script for ZSH
+const DYNAMIC_ZSH_COMPLETION: &[u8] = b"
+# Dynamic tool completion function
+_nabi_dynamic_tools() {
+    local tools
+    tools=(${(f)\"$(nabi tool list --format=json 2>/dev/null | jq -r '.tools[] | .id + \":\" + .description' 2>/dev/null)\"})
+    _describe 'registered tools' tools
+}
+
+# Override the tool exec completion
+_nabi__tool__exec_commands() {
+    _nabi_dynamic_tools
+}
+
+# Override the top-level exec completion
+_nabi__exec_commands() {
+    _nabi_dynamic_tools
+}
+";
+
+// Dynamic completion script for BASH
+const DYNAMIC_BASH_COMPLETION: &[u8] = b"
+# Dynamic tool completion function
+_nabi_dynamic_tools() {
+    local tools
+    tools=$(nabi tool list --format=json 2>/dev/null | jq -r '.tools[].id' 2>/dev/null)
+    COMPREPLY=($(compgen -W \"${tools}\" -- \"${COMP_WORDS[COMP_CWORD]}\"))
+}
+
+# Hook into nabi tool exec completion
+_nabi_tool_exec() {
+    case \"${COMP_CWORD}\" in
+        3)  # After \"nabi tool exec\"
+            _nabi_dynamic_tools
+            ;;
+    esac
+}
+
+# Hook into nabi exec completion
+_nabi_exec() {
+    case \"${COMP_CWORD}\" in
+        2)  # After \"nabi exec\"
+            _nabi_dynamic_tools
+            ;;
+    esac
+}
+
+complete -F _nabi_tool_exec nabi
+complete -F _nabi_exec nabi
+";
+
+fn handle_completions(shell: CompletionShell, output: Option<PathBuf>, install: bool) -> Result<()> {
     let mut command = Cli::command();
-    generate(shell, &mut command, "nabi", &mut io::stdout());
+
+    // Generate base clap completions to a buffer
+    let mut buffer = Vec::new();
+    generate(shell, &mut command, "nabi", &mut buffer);
+
+    // Append shell-specific dynamic completion functions
+    match shell {
+        CompletionShell::Zsh => {
+            buffer.extend_from_slice(b"\n# Dynamic tool discovery for nabi tool exec\n");
+            buffer.extend_from_slice(DYNAMIC_ZSH_COMPLETION);
+        }
+        CompletionShell::Bash => {
+            buffer.extend_from_slice(b"\n# Dynamic tool discovery for nabi tool exec\n");
+            buffer.extend_from_slice(DYNAMIC_BASH_COMPLETION);
+        }
+        _ => {} // Other shells get static completions only
+    }
+
+    // Handle output options
+    if install {
+        let install_path = match shell {
+            CompletionShell::Zsh => {
+                dirs::home_dir()
+                    .ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?
+                    .join(".zsh/completions/_nabi")
+            }
+            CompletionShell::Bash => {
+                dirs::home_dir()
+                    .ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?
+                    .join(".bash_completion.d/nabi")
+            }
+            _ => return Err(anyhow::anyhow!("Auto-install not supported for {:?}", shell)),
+        };
+
+        // Create parent directory if needed
+        if let Some(parent) = install_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        fs::write(&install_path, &buffer)?;
+        println!("✓ Installed completions to: {}", install_path.display());
+
+        // Print instructions
+        match shell {
+            CompletionShell::Zsh => {
+                println!("\nTo enable completions, ensure your ~/.zshrc contains:");
+                println!("  fpath=(~/.zsh/completions $fpath)");
+                println!("  autoload -Uz compinit && compinit");
+            }
+            CompletionShell::Bash => {
+                println!("\nTo enable completions, ensure your ~/.bashrc contains:");
+                println!("  [ -f ~/.bash_completion.d/nabi ] && source ~/.bash_completion.d/nabi");
+            }
+            _ => {}
+        }
+    } else if let Some(path) = output {
+        fs::write(&path, &buffer)?;
+        println!("✓ Wrote completions to: {}", path.display());
+    } else {
+        io::stdout().write_all(&buffer)?;
+    }
+
     Ok(())
 }
 
@@ -4234,7 +4384,10 @@ fn list_tools(
     status_filter: Option<&str>,
     runtime_filter: Option<&str>,
 ) -> Result<()> {
-    println!("{}", "📋 Listing registered tools...".cyan().bold());
+    // Only show header for non-JSON formats (JSON needs clean output for parsing)
+    if format != "json" {
+        println!("{}", "📋 Listing registered tools...".cyan().bold());
+    }
 
     let tools_dir = NabiPaths::config_dir()?.join("tools");
 
