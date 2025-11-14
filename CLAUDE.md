@@ -45,7 +45,7 @@ nabi                        # Root gateway (Rust binary)
 │   └── monitor            # Federation monitoring
 └── self                    # Self-management
     ├── update             # Update all commanders
-    ├── doctor             # Health check
+    ├── health quick        # Bootstrap health check
     └── config             # Configuration
 ```
 
@@ -64,7 +64,7 @@ nabi                        # Root gateway (Rust binary)
 ~/.config/nabi/            # Configuration only (no source code)
 ├── governance/            # Federation governance
 ├── hooks/                 # Claude Code hooks
-├── lib/                   # Python utilities (doctor, syncthing)
+├── lib/                   # Python utilities (health, syncthing)
 └── auras/                 # Aura TOML schemas
 
 ~/.local/share/nabi/       # Persistent data (XDG_DATA_HOME)
@@ -214,7 +214,7 @@ nabi federation agent spawn worker-001
 nabi federation memory query "concept"
 
 # Self-management
-nabi self doctor              # Health check all commanders
+nabi health quick              # Quick bootstrap health check
 nabi self update              # Update all components
 nabi self config show         # Show configuration
 ```

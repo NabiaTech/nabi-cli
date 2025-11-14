@@ -303,7 +303,8 @@ pub enum FederationCommands {
         #[command(subcommand)]
         action: RegistryActions,
     },
-    /// Federation-wide health checks
+    /// Federation-wide health substrates
+
     Health,
     /// Show status of all federation nodes
     Status,
@@ -929,7 +930,28 @@ pub enum RecoverCommands {
 
 #[derive(Subcommand)]
 pub enum HealthCommands {
-    /// Run federation substrate health checks
+    /// Quick bootstrap health check (replaces nabi doctor)
+    Quick,
+    
+    /// Validate hooks, schemas, and transforms (replaces health check)
+    Substrate {
+        /// Auto-remediate critical issues
+        #[arg(long)]
+        auto_remediate: bool,
+        /// Only show FSM state changes (don't run checks)
+        #[arg(long)]
+        fsm_only: bool,
+    },
+    
+    /// Federation service registry health check
+    Services,
+    
+    /// Port allocation and conflict detection
+    Ports,
+    
+    /// [DEPRECATED] Use 'health substrate' instead
+    /// Run federation substrate health substrates
+
     Check {
         /// Auto-remediate critical issues
         #[arg(long)]
@@ -938,7 +960,8 @@ pub enum HealthCommands {
         #[arg(long)]
         fsm_only: bool,
     },
-    /// Show health check status and recent reports
+    /// Show health substrate status and recent reports
+
     Status {
         /// Show detailed results
         #[arg(short, long)]

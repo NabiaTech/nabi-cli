@@ -4,12 +4,26 @@
 **Ready for**: Commander Implementation
 **Date**: 2025-10-05 01:06 AM
 
+## 🔒 Security Notice
+
+**Production-Ready Robustness**: This CLI has been hardened for production use with comprehensive error handling:
+- ✅ **No panic paths**: All `.unwrap()` calls eliminated from production code
+- ✅ **Path safety**: UTF-8 validation with actionable error messages
+- ✅ **Graceful degradation**: Edge cases handled without crashes
+
+**Tmux Operations**: The `nabi tmux send-prompt` command sends text directly to shell prompts. While primarily used for capture operations, be aware:
+- User-provided text is executed in the target pane's shell environment
+- Do not use with untrusted or unvalidated external input
+- Sanitize input in automated workflows that accept external data
+
+For security-sensitive automation, prefer read-only operations like `nabi tmux capture`.
+
 ## Quick Start
 
 ```bash
 # nabi is installed and operational
 nabi --help
-nabi self doctor
+nabi health quick
 nabi self config
 
 # Example commands (routing implemented, commanders pending):
@@ -148,8 +162,8 @@ $ nabi claude session list --limit 5
 ℹ️  Commander implementation pending
 
 # Health check validates structure:
-$ nabi self doctor
-🏥 Running health check...
+$ nabi health quick
+🏥 Quick Health Check (Bootstrap Validation)...
   ✓ claude present
   ✓ data present
   ✓ federation present

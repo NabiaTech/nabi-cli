@@ -527,18 +527,19 @@ enum ManifestActions {
 enum RepoCommands {
     /// Check repository compliance (XDG, hardcoded paths)
     Check {
-        /// Path to repository (defaults to current directory)
-        #[arg(short, long)]
+        /// Path to repository (default: current directory)
+        #[arg(value_name = "PATH")]
         path: Option<String>,
-
+        
         /// Output format (text, json)
         #[arg(short, long, default_value = "text")]
         format: String,
-
-        /// Strict mode (exit non-zero on warnings)
-        #[arg(short, long)]
+        
+        /// Strict mode (fail on warnings)
+        #[arg(long)]
         strict: bool,
     },
+    
     /// Index a repository for code analysis (creates persistent graph)
     ///
     /// Analyzes a codebase and creates a searchable symbol index. The index is cached
@@ -1322,7 +1323,26 @@ enum RecoverCommands {
 
 #[derive(Subcommand)]
 enum HealthCommands {
-    /// Run federation substrate health checks
+    /// Quick bootstrap health check (replaces nabi doctor)
+    Quick,
+    
+    /// Validate hooks, schemas, and transforms (replaces health check)
+    Substrate {
+        /// Auto-remediate critical issues
+        #[arg(long)]
+        auto_remediate: bool,
+        /// Only show FSM state changes (don't run checks)
+        #[arg(long)]
+        fsm_only: bool,
+    },
+    
+    /// Federation service registry health check
+    Services,
+    
+    /// Port allocation and conflict detection
+    Ports,
+    
+    /// [DEPRECATED] Run federation substrate health checks
     Check {
         /// Auto-remediate critical issues
         #[arg(long)]
@@ -1566,7 +1586,12 @@ fn main() -> Result<()> {
         Commands::Health { command } => handle_health(command),
         Commands::Completions { shell, output, install } => handle_completions(shell, output, install),
         Commands::Deckgen { command } => handle_deckgen(command),
-        Commands::Doctor => handle_self(SelfCommands::Doctor),
+        Commands::Doctor => {
+            println!("⚠️  DEPRECATED: Use 'nabi health quick' instead");
+            println!("This command will be removed in 6 months
+");
+            handle_self(SelfCommands::Doctor)
+        },
         Commands::Migrate { command } => handle_migrate(command),
     }
 }
@@ -2193,8 +2218,11 @@ fn validate_tool_dependencies(
             messages.push(format!("🔧 Creating venv at {}...", venv_loc));
 
             // Create venv using uv
+            let venv_str = venv_path
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("Venv path contains invalid UTF-8: {:?}", venv_path))?;
             let status = process::Command::new("uv")
-                .args(&["venv", venv_path.to_str().unwrap()])
+                .args(&["venv", venv_str])
                 .status()
                 .context("Failed to create venv with uv")?;
 
@@ -2217,14 +2245,21 @@ fn validate_tool_dependencies(
             let temp_req = std::env::temp_dir().join("nabi_temp_requirements.txt");
             fs::write(&temp_req, dependencies.join("\n"))?;
 
+            let temp_req_str = temp_req
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("Requirements file path contains invalid UTF-8: {:?}", temp_req))?;
+            let python_bin_str = python_bin
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("Python binary path contains invalid UTF-8: {:?}", python_bin))?;
+
             let status = process::Command::new("uv")
                 .args(&[
                     "pip",
                     "install",
                     "-r",
-                    temp_req.to_str().unwrap(),
+                    temp_req_str,
                     "--python",
-                    python_bin.to_str().unwrap(),
+                    python_bin_str,
                 ])
                 .status()
                 .context("Failed to install dependencies with uv")?;
@@ -3706,7 +3741,8 @@ fn handle_hooks(command: HooksCommands) -> Result<()> {
                     for entry in entries.flatten() {
                         let path = entry.path();
                         if path.extension().map_or(false, |e| e == "py") && path.is_file() {
-                            let filename = path.file_name().unwrap();
+                            let filename = path.file_name()
+                                .ok_or_else(|| anyhow::anyhow!("Path has no filename: {}", path.display()))?;
                             let dest = hooks_deploy.join(filename);
                             fs::copy(&path, &dest).context(format!(
                                 "Failed to copy {} to {}",
@@ -3819,12 +3855,13 @@ fn handle_hooks(command: HooksCommands) -> Result<()> {
                                 continue;
                             }
 
+                            let filename = path.file_name()
+                                .map(|f| f.to_string_lossy().to_string())
+                                .unwrap_or_else(|| format!("{}", path.display()));
+
                             println!(
                                 "{}",
-                                format!(
-                                    "  Running {}...",
-                                    path.file_name().unwrap().to_string_lossy()
-                                )
+                                format!("  Running {}...", filename)
                                 .dimmed()
                             );
 
@@ -3985,9 +4022,13 @@ fn handle_hook_debug(action: HookDebugActions) -> Result<()> {
                         .format("%Y-%m-%d %H:%M:%S")
                         .to_string();
 
+                let filename = path.file_name()
+                    .map(|f| f.to_string_lossy().to_string())
+                    .unwrap_or_else(|| format!("{}", path.display()));
+
                 println!(
                     "  {} - {} - {}",
-                    path.file_name().unwrap().to_string_lossy(),
+                    filename,
                     size_str.dimmed(),
                     modified_str.dimmed()
                 );
@@ -4281,6 +4322,35 @@ fn handle_recover(command: RecoverCommands) -> Result<()> {
 
 fn handle_health(command: HealthCommands) -> Result<()> {
     match command {
+        HealthCommands::Quick => {
+            println!("⚠️  NOTE: Replaces deprecated 'nabi doctor'");
+            handlers::health::health_quick()?;
+            Ok(())
+        },
+        
+        HealthCommands::Substrate { auto_remediate, fsm_only } => {
+            println!("⚠️  NOTE: Replaces deprecated 'nabi health check'");
+            println!("{}", "🏥 Running federation substrate health checks...".green().bold());
+            
+            let mut args = vec!["health", "check"];
+            if auto_remediate {
+                args.push("--auto-remediate");
+            }
+            if fsm_only {
+                args.push("--fsm-only");
+            }
+            route_to_python_cli(&args)
+        },
+        
+        HealthCommands::Services => {
+            println!("⚠️  NOTE: Replaces deprecated 'nabi federation health'");
+            handlers::health::health_services()
+        },
+        
+        HealthCommands::Ports => {
+            handlers::health::health_ports()
+        },
+        
         HealthCommands::Check {
             auto_remediate,
             fsm_only,

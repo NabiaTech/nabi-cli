@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use colored::*;
-use crate::cli::{SelfCommands, SpecFormat};
+use crate::cli::SelfCommands;
 use crate::paths::NabiPaths;
 use crate::routing::{check_commander, update_commander};
 use crate::spec::handle_spec;
