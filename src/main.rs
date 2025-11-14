@@ -112,6 +112,11 @@ enum Commands {
         command: RegisterCommands,
     },
     /// Filesystem scanning and metadata generation
+    ///
+    /// Examples:
+    ///   nabi scan --all                      # Scan all federation dirs (includes ~/docs)
+    ///   nabi scan --docs nats                # Search docs for 'nats'
+    ///   nabi scan --docs --type md jetstream # Search markdown for 'jetstream'
     Scan {
         /// Path to scan
         #[arg(value_name = "PATH")]
@@ -125,6 +130,15 @@ enum Commands {
         /// Scan all federation directories (quick tree overview)
         #[arg(long)]
         all: bool,
+        /// Search documentation using ripgrep
+        #[arg(long)]
+        docs: bool,
+        /// Filter by file type(s) (comma-separated: md,txt,toml)
+        #[arg(long, value_delimiter = ',')]
+        type_filter: Option<Vec<String>>,
+        /// Search query for docs search
+        #[arg(value_name = "QUERY", last = true)]
+        query: Option<String>,
     },
     /// File watching and real-time classification
     Watch {
@@ -1505,7 +1519,10 @@ fn main() -> Result<()> {
             tags,
             confidence,
             all,
-        } => handle_scan(path, tags, confidence, all),
+            docs,
+            type_filter,
+            query,
+        } => handle_scan(path, tags, confidence, all, docs, type_filter, query),
         Commands::Watch { path } => handle_watch(path),
         Commands::Aura { command } => handle_aura(command),
         Commands::Configure { command } => handle_configure(command),
@@ -2792,10 +2809,21 @@ fn handle_scan(
     tags: Option<String>,
     confidence: Option<f32>,
     all: bool,
+    docs: bool,
+    type_filter: Option<Vec<String>>,
+    query: Option<String>,
 ) -> Result<()> {
     // If --all flag is set, run tree scan of federation directories
     if all {
         return handle_scan_all();
+    }
+
+    // If --docs flag is set, search documentation with ripgrep
+    if docs {
+        match query {
+            Some(q) => return handle_scan_docs(&q, type_filter),
+            None => anyhow::bail!("--docs requires a search query (e.g., nabi scan --docs nats)"),
+        }
     }
 
     println!("{}", "🔍 Scanning filesystem...".cyan().bold());
@@ -2833,6 +2861,7 @@ fn handle_scan_all() -> Result<()> {
         format!("{}/.claude/output-styles", home),
         format!("{}/.claude/skills", home),
         format!("{}/.nabi", home),
+        format!("{}/docs", home),
     ];
 
     // Add LaunchAgents *nabi* items (glob expansion)
@@ -2911,6 +2940,80 @@ fn handle_scan_all() -> Result<()> {
             "{}",
             format!(
                 "⚠️  tree command returned non-zero exit code ({})",
+                output.status.code().unwrap_or(-1)
+            )
+            .yellow()
+        );
+    }
+
+    Ok(())
+}
+
+fn handle_scan_docs(query: &str, type_filter: Option<Vec<String>>) -> Result<()> {
+    println!(
+        "{}",
+        format!("📚 Searching docs for: '{}'", query).cyan().bold()
+    );
+
+    // Get docs directory
+    let home = std::env::var("HOME").context("Could not determine HOME directory")?;
+    let docs_dir = format!("{}/docs", home);
+
+    // Verify docs directory exists
+    if !std::path::Path::new(&docs_dir).exists() {
+        anyhow::bail!(
+            "Documentation directory not found: {}. Expected ~/docs to exist.",
+            docs_dir
+        );
+    }
+
+    // Build ripgrep command
+    let mut cmd = std::process::Command::new("rg");
+
+    // Color and formatting options
+    cmd.arg("--color=always")
+        .arg("--heading")
+        .arg("--line-number")
+        .arg("--smart-case");
+
+    // Apply type filtering if specified
+    if let Some(types) = type_filter {
+        for ext in types {
+            cmd.arg("--glob").arg(format!("*.{}", ext));
+        }
+    }
+
+    // Add search query and target directory
+    cmd.arg(query).arg(&docs_dir);
+
+    println!();
+
+    // Execute ripgrep
+    let output = cmd
+        .output()
+        .context("Failed to execute ripgrep. Is 'rg' installed?")?;
+
+    // Print stdout (preserving colors)
+    if !output.stdout.is_empty() {
+        print!("{}", String::from_utf8_lossy(&output.stdout));
+    } else {
+        println!(
+            "{}",
+            format!("No matches found for '{}'", query).yellow()
+        );
+    }
+
+    // Print stderr if present (but don't fail on it)
+    if !output.stderr.is_empty() {
+        eprintln!("{}", String::from_utf8_lossy(&output.stderr));
+    }
+
+    // Exit code 1 from ripgrep means "no matches" which is not an error
+    if !output.status.success() && output.status.code() != Some(1) {
+        eprintln!(
+            "{}",
+            format!(
+                "⚠️  ripgrep returned non-zero exit code ({})",
                 output.status.code().unwrap_or(-1)
             )
             .yellow()

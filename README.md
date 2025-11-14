@@ -18,7 +18,50 @@ nabi data jsonl validate file.jsonl
 nabi federation agent list
 nabi tmux mem --format table
 nabi kernel mem --format text
+
+# Scan commands (fully operational):
+nabi scan --all                        # Federation tree view (includes ~/docs)
+nabi scan --docs -- nats               # Search docs with ripgrep
+nabi scan --docs --type-filter md -- key   # Filter by extension
 ```
+
+## Scan - Federation-Wide Search
+
+The `scan` command provides federation-wide directory scanning and documentation search powered by ripgrep.
+
+### Tree View
+```bash
+nabi scan --all  # Scans all federation directories including ~/docs
+```
+
+Scans:
+- `~/nabia`
+- `~/.config/nabi`
+- `~/legen`
+- `~/.claude/agents`
+- `~/.claude/commands`
+- `~/.claude/output-styles`
+- `~/.claude/skills`
+- `~/.nabi`
+- `~/docs` ✨ NEW
+
+### Documentation Search
+```bash
+# Basic search
+nabi scan --docs -- nats
+
+# Filter by file type (markdown)
+nabi scan --docs --type-filter md -- jetstream
+
+# Multiple extensions
+nabi scan --docs --type-filter md,txt,toml -- "storage mesh"
+```
+
+Features:
+- **Ripgrep Integration**: Fast search with color preservation
+- **Type Filtering**: `--type-filter md,txt,toml`
+- **Smart Case**: Case-insensitive unless uppercase present
+- **Rich Output**: Heading + line numbers with syntax highlighting
 
 ## Architecture Summary
 
