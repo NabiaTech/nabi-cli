@@ -23,12 +23,20 @@ set -u
 # Configuration
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="$PROJECT_ROOT/.build"
-CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}"
 
-# Files
+# Files - check both possible locations (justfile uses ~/.zsh, Makefile uses ~/.cache)
 STATIC_FILE="$BUILD_DIR/_nabi_static"
 DYNAMIC_FILE="$PROJECT_ROOT/contrib/nabi-completions-dynamic.zsh"
-OUTPUT_FILE="$CACHE_DIR/zsh/completions/_nabi"
+
+# Determine completion file location (try justfile location first, then Makefile location)
+if [[ -f "$HOME/.zsh/completions/_nabi" ]]; then
+    OUTPUT_FILE="$HOME/.zsh/completions/_nabi"
+elif [[ -f "${XDG_CACHE_HOME:-$HOME/.cache}/zsh/completions/_nabi" ]]; then
+    OUTPUT_FILE="${XDG_CACHE_HOME:-$HOME/.cache}/zsh/completions/_nabi"
+else
+    # Default to justfile location if neither exists yet (for fresh builds)
+    OUTPUT_FILE="$HOME/.zsh/completions/_nabi"
+fi
 
 # Colors
 RED='\033[0;31m'
@@ -135,7 +143,8 @@ echo ""
 echo "Non-critical checks:"
 
 # Check 8: File size sanity
-output_size=$(stat -f%z "$OUTPUT_FILE" 2>/dev/null || stat -c%s "$OUTPUT_FILE" 2>/dev/null)
+# Use wc -c for portable file size (avoids custom stat script in ~/.local/bin/stat)
+output_size=$(wc -c < "$OUTPUT_FILE")
 if [[ $output_size -gt 150000 && $output_size -lt 500000 ]]; then
     pass "Output file size is reasonable ($((output_size / 1024))KB)"
 else
