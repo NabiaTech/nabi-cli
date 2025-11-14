@@ -2,6 +2,8 @@
 /target/
 **/*.rs.bk
 *.pdb
+.build/
+.build/_nabi_static
 
 # Generated cargo config (use .cargo/config.toml.template instead)
 .cargo/config.toml
