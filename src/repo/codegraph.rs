@@ -11,6 +11,7 @@
 use anyhow::{anyhow, Context, Result};
 use colored::*;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -118,7 +119,7 @@ fn get_hooks_dir() -> Result<PathBuf> {
 /// Get codegraph-mcp directory
 fn get_codegraph_mcp_dir() -> Result<PathBuf> {
     let home = std::env::var("HOME").context("HOME environment variable not set")?;
-    let mcp_dir = PathBuf::from(home).join("mcp-servers").join("codegraph-mcp");
+    let mcp_dir = PathBuf::from(home).join("nabia").join("platform").join("codegraph-mcp");
 
     if !mcp_dir.exists() {
         return Err(anyhow!(
@@ -128,6 +129,23 @@ fn get_codegraph_mcp_dir() -> Result<PathBuf> {
     }
 
     Ok(mcp_dir)
+}
+
+/// Compute deterministic hash of repository path (first 8 chars of SHA256)
+/// This ensures same repo name from different paths gets unique cache keys
+pub fn compute_repo_hash(repo_path: &str) -> Result<String> {
+    let path = Path::new(repo_path)
+        .canonicalize()
+        .unwrap_or_else(|_| PathBuf::from(repo_path));
+
+    let canonical = path.to_string_lossy();
+    let mut hasher = Sha256::new();
+    hasher.update(canonical.as_bytes());
+    let hash = hasher.finalize();
+
+    // Return first 8 characters of hex hash (4 bytes = 8 hex chars)
+    let hex_hash = hex::encode(&hash[..4]);
+    Ok(hex_hash)
 }
 
 // ============================================================================
@@ -250,18 +268,25 @@ pub fn run_pre_query_hook(repo_path: &str) -> Result<()> {
 // ============================================================================
 
 /// Generate index using codegraph-mcp's AST-based parser
-pub fn generate_index(repo_path: &str, _language: &str) -> Result<CodegraphIndex> {
+pub fn generate_index(repo_path: &str, language: &str) -> Result<CodegraphIndex> {
     let path = Path::new(repo_path).canonicalize()?;
     let repo_name = path
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("unknown");
 
-    println!("{}", "  → Analyzing code structure (AST-based)...".cyan());
+    let repo_hash = compute_repo_hash(repo_path)?;
+    let cache_dir_name = format!("{}-{}-{}", repo_name, repo_hash, language);
 
-    // Determine output directory
+    println!("{}", "  → Analyzing code structure (AST-based)...".cyan());
+    println!(
+        "{}",
+        format!("  → Cache: {}", cache_dir_name).dimmed()
+    );
+
+    // Determine output directory with language and hash
     let graphs_dir = get_graphs_dir()?;
-    let output_dir = graphs_dir.join(repo_name);
+    let output_dir = graphs_dir.join(&cache_dir_name);
     fs::create_dir_all(&output_dir)?;
 
     // Get codegraph-mcp directory
@@ -333,16 +358,25 @@ pub fn generate_index(repo_path: &str, _language: &str) -> Result<CodegraphIndex
 // Index Loading
 // ============================================================================
 
-/// Load an index from disk (graph.json format)
-pub fn load_index(repo_name: &str) -> Result<CodegraphIndex> {
+/// Load an index from disk (graph.json format) with language-aware path
+pub fn load_index(repo_path: &str, language: &str) -> Result<CodegraphIndex> {
+    let path = Path::new(repo_path).canonicalize()?;
+    let repo_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("unknown");
+
+    let repo_hash = compute_repo_hash(repo_path)?;
+    let cache_dir_name = format!("{}-{}-{}", repo_name, repo_hash, language);
+
     let graphs_dir = get_graphs_dir()?;
-    let graph_dir = graphs_dir.join(repo_name);
+    let graph_dir = graphs_dir.join(&cache_dir_name);
     let graph_file = graph_dir.join("graph.json");
 
     if !graph_file.exists() {
         return Err(anyhow!(
-            "Index not found for '{}'. Run 'nabi analyze repo' first.",
-            repo_name
+            "Index not found for '{}' (language: {}). Run 'nabi analyze repo' first.",
+            repo_name, language
         ));
     }
 

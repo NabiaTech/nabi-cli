@@ -53,9 +53,11 @@ pub fn analyze(repo_path: &str, language: Option<&str>, force: bool, format: &st
         .and_then(|n| n.to_str())
         .unwrap_or("unknown");
 
-    // Check if index already exists
+    // Check if index already exists (with language-aware path)
     let graphs_dir = codegraph::get_graphs_dir()?;
-    let index_dir = graphs_dir.join(repo_name);
+    let repo_hash = codegraph::compute_repo_hash(repo_path)?;
+    let cache_dir_name = format!("{}-{}-{}", repo_name, repo_hash, &detected_lang);
+    let index_dir = graphs_dir.join(&cache_dir_name);
     let graph_file = index_dir.join("graph.json");
     let index_exists = graph_file.exists();
 
@@ -64,9 +66,9 @@ pub fn analyze(repo_path: &str, language: Option<&str>, force: bool, format: &st
         println!("{}", "Phase 1: Loading Cached Index".bold().cyan());
         println!(
             "{}",
-            format!("  → Found existing index at: {}", index_dir.display()).cyan()
+            format!("  → Language: {}", detected_lang).cyan()
         );
-        let cached_index = codegraph::load_index(repo_name)?;
+        let cached_index = codegraph::load_index(repo_path, &detected_lang)?;
         println!(
             "{}",
             format!(

@@ -150,11 +150,16 @@ fn load_and_validate_index(repo_path: &str) -> Result<codegraph::CodegraphIndex>
         .and_then(|n| n.to_str())
         .unwrap_or("unknown");
 
-    // Load index from unified location
-    codegraph::load_index(repo_name)
+    // Detect language
+    let detected_lang = codegraph::detect_language(repo_path)
+        .unwrap_or_else(|_| "python".to_string());
+
+    // Load index from language-aware location
+    codegraph::load_index(repo_path, &detected_lang)
         .map_err(|e| anyhow!(
-            "Failed to load index for '{}': {}\nRun 'nabi analyze repo {}' first.",
+            "Failed to load index for '{}' (language: {}): {}\nRun 'nabi analyze repo {}' first.",
             repo_name,
+            detected_lang,
             e,
             repo_path
         ))
