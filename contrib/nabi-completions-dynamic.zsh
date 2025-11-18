@@ -83,6 +83,18 @@ if (( $+functions[_nabi] )); then
             fi
         fi
 
+        # Check if we're completing tool argument for nabi tool exec
+        if [[ "${words[1]}" == "nabi" ]] && \
+           [[ "${words[2]}" == "tool" ]] && \
+           [[ "${words[3]}" == "exec" ]] && \
+           [[ $CURRENT -eq 4 ]]; then
+            _nabi_debug_log "Detected nabi tool exec tool completion, calling our function"
+            if (( $+functions[_nabi_tool_exec_tool_completion] )); then
+                _nabi_tool_exec_tool_completion
+                return 0
+            fi
+        fi
+
         # For other cases, call original
         # Note: nabi exec dynamic tool completion is handled by Rust-generated completions
         _nabi_original "$@"
@@ -335,6 +347,21 @@ if (( ! $+functions[_nabi_dynamic_tools] )); then
     }
 fi
 
+# Completion for tool argument of: nabi tool exec <TOOL>
+# This is trickier because the Rust completions use :_default for the tool arg
+# We intercept at the _default level to provide tool completions
+_nabi_tool_exec_tool_completion() {
+    local tools
+    tools=(${(f)"$(nabi tool list --format=json 2>/dev/null | jq -r '.tools[] | .id + ":" + .description' 2>/dev/null)"})
+
+    if (( ${#tools} == 0 )); then
+        _default  # Fall back to default if no tools found
+        return 1
+    fi
+
+    _describe 'tool' tools
+}
+
 # Override exec commands to use dynamic tool completion
 # Note: This must be done after compinit loads the base _nabi__exec_commands
 # The Rust-generated version can't override due to zsh's function guards
@@ -343,7 +370,7 @@ _nabi__exec_commands() {
     _nabi_dynamic_tools
 }
 
-# Also override tool exec commands for: nabi tool exec <TOOL>
+# Also override tool exec commands for: nabi tool exec <TOOL> (subcommands, not the tool arg)
 (( $+functions[_nabi__tool__exec_commands] )) && unfunction _nabi__tool__exec_commands
 _nabi__tool__exec_commands() {
     _nabi_dynamic_tools
