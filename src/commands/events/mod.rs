@@ -9,6 +9,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write as IoWrite};
 use std::path::PathBuf;
 use chrono::{DateTime, Duration, Utc};
+use uuid::Uuid;
 
 #[derive(Subcommand)]
 pub enum EventsCommands {
@@ -152,6 +153,8 @@ pub enum OutputFormat {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Event {
+    /// Unique event identifier (UUID)
+    pub id: String,
     pub source: String,
     pub severity: EventSeverity,
     pub message: String,
@@ -217,12 +220,17 @@ fn handle_publish(
     timestamp: Option<String>,
     stdin: bool,
 ) -> Result<()> {
-    let event = if stdin {
+    // Generate UUID for this event
+    let event_id = Uuid::new_v4().to_string();
+
+    let mut event = if stdin {
         // Read event from stdin
         let stdin = std::io::stdin();
         let reader = stdin.lock();
-        let event: Event = serde_json::from_reader(reader)
+        let mut event: Event = serde_json::from_reader(reader)
             .context("Failed to parse event JSON from stdin")?;
+        // Override ID even if provided in stdin (ensure uniqueness)
+        event.id = event_id.clone();
         event
     } else {
         // Build event from CLI args
@@ -238,6 +246,7 @@ fn handle_publish(
             .unwrap_or_else(Utc::now);
 
         Event {
+            id: event_id.clone(),
             source,
             severity,
             message,
@@ -247,7 +256,11 @@ fn handle_publish(
         }
     };
 
-    // Write event to store
+    // DUAL STORAGE PATTERN:
+    // 1. Write to JSONL stream (backward compatibility)
+    // 2. Write to individual event file (enables acknowledgment)
+
+    // Storage 1: Append to JSONL stream
     let store_path = get_event_store_path()?;
     let mut file = OpenOptions::new()
         .create(true)
@@ -258,12 +271,27 @@ fn handle_publish(
     let json_line = serde_json::to_string(&event)?;
     writeln!(file, "{}", json_line).context("Failed to write event")?;
 
+    // Storage 2: Write to date-based individual file
+    let state_dir = dirs::data_local_dir()
+        .context("Could not determine local data directory")?
+        .join("nabi")
+        .join("events")
+        .join(event.timestamp.format("%Y-%m-%d").to_string());
+
+    fs::create_dir_all(&state_dir)?;
+
+    let event_file_path = state_dir.join(format!("{}.json", event.id));
+    let event_json = serde_json::to_string_pretty(&event)?;
+    fs::write(&event_file_path, event_json)
+        .context("Failed to write individual event file")?;
+
     println!(
-        "{}✓{} Event published: [{}] {}",
+        "{}✓{} Event published: [{}] {} (ID: {})",
         "\x1b[32m",
         "\x1b[0m",
         event.source,
-        event.message
+        event.message,
+        event.id
     );
 
     Ok(())

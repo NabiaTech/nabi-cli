@@ -1,4 +1,4 @@
-# CLAUDE.md - nabi-cli Federation Gateway
+# File: ~/nabia/core/nabi-cli/CLAUDE.md
 
 ⚠️ **ARCHITECTURE STATUS**:
 - **This Document**: Commander plugin architecture (**FUTURE ROADMAP** - not yet implemented)

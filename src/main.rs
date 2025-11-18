@@ -156,6 +156,27 @@ enum Commands {
         #[arg(value_name = "PATH")]
         path: Option<String>,
     },
+    /// Organize files/directories with timestamp prefixes and topology categories
+    ///
+    /// Renames files/directories using their latest modification time as prefix
+    /// followed by inferred topology categories for better chronological ordering.
+    Orgtime {
+        /// Path to organize (directory or file)
+        #[arg(value_name = "PATH")]
+        path: String,
+        /// Custom topology category (auto-inferred if not provided)
+        #[arg(short, long)]
+        category: Option<String>,
+        /// Operate on files within directory instead of renaming the directory itself
+        #[arg(long)]
+        files: bool,
+        /// Preserve original modification times during rename operations
+        #[arg(long)]
+        preserve_times: bool,
+        /// Dry run mode (show what would be done without executing)
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Manage AURAs (Automated semantic context bubbles)
     Aura {
         #[command(subcommand)]
@@ -532,16 +553,16 @@ enum RepoCommands {
         /// Path to repository (default: current directory)
         #[arg(value_name = "PATH")]
         path: Option<String>,
-        
+
         /// Output format (text, json)
         #[arg(short, long, default_value = "text")]
         format: String,
-        
+
         /// Strict mode (fail on warnings)
         #[arg(long)]
         strict: bool,
     },
-    
+
     /// Index a repository for code analysis (creates persistent graph)
     ///
     /// Analyzes a codebase and creates a searchable symbol index. The index is cached
@@ -1327,7 +1348,7 @@ enum RecoverCommands {
 enum HealthCommands {
     /// Quick bootstrap health check (replaces nabi doctor)
     Quick,
-    
+
     /// Validate hooks, schemas, and transforms (replaces health check)
     Substrate {
         /// Auto-remediate critical issues
@@ -1337,13 +1358,13 @@ enum HealthCommands {
         #[arg(long)]
         fsm_only: bool,
     },
-    
+
     /// Federation service registry health check
     Services,
-    
+
     /// Port allocation and conflict detection
     Ports,
-    
+
     /// [DEPRECATED] Run federation substrate health checks
     Check {
         /// Auto-remediate critical issues
@@ -1571,6 +1592,9 @@ fn main() -> Result<()> {
             query,
         } => handle_scan(path, tags, confidence, all, docs, type_filter, query),
         Commands::Watch { path } => handle_watch(path),
+        Commands::Orgtime { path, category, files, preserve_times, dry_run } => {
+            handle_orgtime(path, category, files, preserve_times, dry_run)
+        }
         Commands::Aura { command } => handle_aura(command),
         Commands::Configure { command } => handle_configure(command),
         Commands::Db { command } => handle_db(command),
@@ -3221,6 +3245,10 @@ fn handle_watch(path: Option<String>) -> Result<()> {
     route_to_python_cli(&arg_refs)
 }
 
+fn handle_orgtime(path: String, category: Option<String>, files: bool, preserve_times: bool, dry_run: bool) -> Result<()> {
+    crate::commands::orgtime::cmd_run(path, category, files, preserve_times, dry_run)
+}
+
 // handle_aura moved to handlers/aura.rs
 
 fn handle_configure(command: ConfigureCommands) -> Result<()> {
@@ -4329,11 +4357,11 @@ fn handle_health(command: HealthCommands) -> Result<()> {
             handlers::health::health_quick()?;
             Ok(())
         },
-        
+
         HealthCommands::Substrate { auto_remediate, fsm_only } => {
             println!("⚠️  NOTE: Replaces deprecated 'nabi health check'");
             println!("{}", "🏥 Running federation substrate health checks...".green().bold());
-            
+
             let mut args = vec!["health", "check"];
             if auto_remediate {
                 args.push("--auto-remediate");
@@ -4343,16 +4371,16 @@ fn handle_health(command: HealthCommands) -> Result<()> {
             }
             route_to_python_cli(&args)
         },
-        
+
         HealthCommands::Services => {
             println!("⚠️  NOTE: Replaces deprecated 'nabi federation health'");
             handlers::health::health_services()
         },
-        
+
         HealthCommands::Ports => {
             handlers::health::health_ports()
         },
-        
+
         HealthCommands::Check {
             auto_remediate,
             fsm_only,

@@ -8,6 +8,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write as IoWrite};
 use std::path::PathBuf;
 use chrono::{DateTime, Duration, Utc};
+use uuid::Uuid;
 
 use crate::paths::NabiPaths;
 
@@ -138,6 +139,7 @@ pub enum OutputFormat {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub id: String,
 pub struct Event {
     pub source: String,
     pub severity: EventSeverity,
@@ -215,6 +217,7 @@ fn handle_publish(
             .unwrap_or_else(Utc::now);
 
         Event {
+            id: Uuid::new_v4().to_string(),
             source,
             severity,
             message,

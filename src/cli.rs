@@ -100,6 +100,27 @@ pub enum Commands {
         #[arg(value_name = "PATH")]
         path: Option<String>,
     },
+    /// Organize files/directories with timestamp prefixes and topology categories
+    ///
+    /// Renames files/directories using their latest modification time as prefix
+    /// followed by inferred topology categories for better chronological ordering.
+    Orgtime {
+        /// Path to organize (directory or file)
+        #[arg(value_name = "PATH")]
+        path: String,
+        /// Custom topology category (auto-inferred if not provided)
+        #[arg(short, long)]
+        category: Option<String>,
+        /// Operate on files within directory instead of renaming the directory itself
+        #[arg(long)]
+        files: bool,
+        /// Preserve original modification times during rename operations
+        #[arg(long)]
+        preserve_times: bool,
+        /// Dry run mode (show what would be done without executing)
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Manage AURAs (Automated semantic context bubbles)
     Aura {
         #[command(subcommand)]
@@ -932,7 +953,7 @@ pub enum RecoverCommands {
 pub enum HealthCommands {
     /// Quick bootstrap health check (replaces nabi doctor)
     Quick,
-    
+
     /// Validate hooks, schemas, and transforms (replaces health check)
     Substrate {
         /// Auto-remediate critical issues
@@ -942,13 +963,13 @@ pub enum HealthCommands {
         #[arg(long)]
         fsm_only: bool,
     },
-    
+
     /// Federation service registry health check
     Services,
-    
+
     /// Port allocation and conflict detection
     Ports,
-    
+
     /// [DEPRECATED] Use 'health substrate' instead
     /// Run federation substrate health substrates
 
