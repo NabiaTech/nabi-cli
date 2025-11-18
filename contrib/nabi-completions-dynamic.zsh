@@ -67,6 +67,7 @@ if (( $+functions[_nabi] )); then
         fi
 
         # For other cases, call original
+        # Note: nabi exec dynamic tool completion is handled by Rust-generated completions
         _nabi_original "$@"
     }
 fi
