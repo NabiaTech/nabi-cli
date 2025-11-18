@@ -83,7 +83,18 @@ if (( $+functions[_nabi] )); then
             fi
         fi
 
-        # Check if we're completing tool argument for nabi tool exec
+        # Check if we're completing tool argument for top-level: nabi exec <TOOL>
+        if [[ "${words[1]}" == "nabi" ]] && \
+           [[ "${words[2]}" == "exec" ]] && \
+           [[ $CURRENT -eq 3 ]]; then
+            _nabi_debug_log "Detected nabi exec tool completion, calling our function"
+            if (( $+functions[_nabi_tool_exec_tool_completion] )); then
+                _nabi_tool_exec_tool_completion
+                return 0
+            fi
+        fi
+
+        # Check if we're completing tool argument for nested: nabi tool exec <TOOL>
         if [[ "${words[1]}" == "nabi" ]] && \
            [[ "${words[2]}" == "tool" ]] && \
            [[ "${words[3]}" == "exec" ]] && \
