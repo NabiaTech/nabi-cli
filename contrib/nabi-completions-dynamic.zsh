@@ -10,6 +10,11 @@
 #
 # This hooks into the clap-generated completions by overriding the _nabi function
 # to add dynamic completions for specific arguments.
+#
+# Supported dynamic completions:
+# - `nabi port shift <SERVICE>` — Service names from port registry
+# - `nabi tmux send-prompt <PANE>` — Tmux session:window.pane targets
+# - `nabi events ack <EVENT_ID>` — Event IDs from event storage
 
 # XDG-compliant cache directory (matches Rust codebase)
 _NABI_CACHE_DIR="${XDG_CACHE_HOME:-${HOME}/.cache}/nabi"
@@ -64,6 +69,18 @@ if (( $+functions[_nabi] )); then
             _nabi_debug_log "Detected send-prompt pane completion, calling our function"
             _nabi_tmux_send_prompt_pane
             return 0
+        fi
+
+        # Check if we're completing event ID for events ack
+        if [[ "${words[1]}" == "nabi" ]] && \
+           [[ "${words[2]}" == "events" ]] && \
+           [[ "${words[3]}" == "ack" ]] && \
+           [[ $CURRENT -eq 4 ]]; then
+            _nabi_debug_log "Detected events ack event ID completion, calling our function"
+            if (( $+functions[_nabi_events_ack_event_id] )); then
+                _nabi_events_ack_event_id
+                return 0
+            fi
         fi
 
         # For other cases, call original
@@ -262,6 +279,74 @@ _nabi_port_shift_service() {
 
     _nabi_debug_log "Using ${#services} services for completion"
     _describe 'service' services
+}
+
+# Helper function to get event IDs from event storage
+_nabi_get_event_ids() {
+    local -a event_ids
+    local event_base="${XDG_DATA_HOME:-${HOME}/.local/share}/nabi/events"
+
+    # Check if event directory exists
+    if [[ ! -d "$event_base" ]]; then
+        return 1
+    fi
+
+    # Get event IDs from all .json files in the directory
+    for json_file in "$event_base"/*/*.json; do
+        if [[ -f "$json_file" ]]; then
+            local filename="${json_file##*/}"
+            local event_id="${filename%.json}"
+            event_ids+=("$event_id")
+        fi
+    done
+
+    # Return unique event IDs
+    if (( ${#event_ids} > 0 )); then
+        echo "${event_ids[@]}"
+        return 0
+    fi
+
+    return 1
+}
+
+# Completion for: nabi events ack <EVENT_ID>
+_nabi_events_ack_event_id() {
+    _nabi_debug_log "_nabi_events_ack_event_id called"
+    local -a event_ids
+
+    event_ids=($(_nabi_get_event_ids))
+
+    if (( ${#event_ids} == 0 )); then
+        _message "No events found"
+        return 1
+    fi
+
+    _nabi_debug_log "Found ${#event_ids} event IDs for completion"
+    _describe 'event ID' event_ids
+}
+
+# Dynamic tool completion function (ensure it's defined here too)
+# This may be defined in the Rust-generated completions, but we redefine it here to be safe
+if (( ! $+functions[_nabi_dynamic_tools] )); then
+    _nabi_dynamic_tools() {
+        local tools
+        tools=(${(f)"$(nabi tool list --format=json 2>/dev/null | jq -r '.tools[] | .id + ":" + .description' 2>/dev/null)"})
+        _describe 'registered tools' tools
+    }
+fi
+
+# Override exec commands to use dynamic tool completion
+# Note: This must be done after compinit loads the base _nabi__exec_commands
+# The Rust-generated version can't override due to zsh's function guards
+(( $+functions[_nabi__exec_commands] )) && unfunction _nabi__exec_commands
+_nabi__exec_commands() {
+    _nabi_dynamic_tools
+}
+
+# Also override tool exec commands for: nabi tool exec <TOOL>
+(( $+functions[_nabi__tool__exec_commands] )) && unfunction _nabi__tool__exec_commands
+_nabi__tool__exec_commands() {
+    _nabi_dynamic_tools
 }
 
 # Note: We don't override _default anymore since we handle everything in _nabi() override
