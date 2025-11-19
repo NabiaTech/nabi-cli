@@ -3,7 +3,7 @@ pub mod ack;
 
 // Re-export everything from the main events module
 use anyhow::{Context, Result};
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration, Local, Utc};
 use clap::{Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
@@ -412,7 +412,9 @@ fn print_events_text(events: &[Event]) {
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
     for event in events {
-        let time_str = event.timestamp.format("%H:%M:%S");
+        // Convert UTC to local timezone (respects TZ environment variable)
+        let local_time = event.timestamp.with_timezone(&Local);
+        let time_str = local_time.format("%H:%M:%S %Z");
         let color = event.severity.color_code();
         let reset = "\x1b[0m";
 
@@ -441,7 +443,9 @@ fn print_events_text(events: &[Event]) {
 
 fn print_events_compact(events: &[Event]) {
     for event in events {
-        let time_str = event.timestamp.format("%H:%M:%S");
+        // Convert UTC to local timezone (respects TZ environment variable)
+        let local_time = event.timestamp.with_timezone(&Local);
+        let time_str = local_time.format("%H:%M:%S %Z");
         println!(
             "[{}] [{:8}] [{}] {}",
             time_str,
