@@ -130,6 +130,25 @@ default:
 
     mkdir -p "${ZSH_COMP_DIR}" .build
     "${BINARY}" completions zsh > .build/_nabi_static
+    
+    # Post-process: Replace : or :_default with specific completion functions
+    # This is the unified strategy - no overriding _nabi, just define specific functions
+    echo "🔧 Post-processing completion file to add dynamic completion functions..."
+    
+    # 1. Replace pane argument for send-prompt (no completion function, just :)
+    # Match: '::pane -- ...:' and add completion function
+    sed -i '' "s/'::pane -- \(.*\):'/'::pane -- \1:_nabi__tmux__send_prompt_pane'/" .build/_nabi_static
+    
+    # 2. Replace service argument for port shift
+    sed -i '' 's/:service -- Service name to migrate:_default/:service -- Service name to migrate:_nabi__port__shift_service/' .build/_nabi_static
+    
+    # 3 & 4. Replace tool arguments for both nabi exec and nabi tool exec
+    # Use Python script to properly track tool section vs top-level exec
+    python3 scripts/post-process-completions.py .build/_nabi_static
+    
+    # 5. Replace event_id argument for events ack
+    sed -i '' 's/:event_id -- Event ID to acknowledge:_default/:event_id -- Event ID to acknowledge:_nabi__events__ack_event_id/' .build/_nabi_static
+    
     cp .build/_nabi_static "${ZSH_COMP_FILE}"
     echo '' >> "${ZSH_COMP_FILE}"
     echo '# Dynamic tmux completion enhancements (injected at build time)' >> "${ZSH_COMP_FILE}"

@@ -1,20 +1,15 @@
 #compdef nabi
 # Dynamic Completion Enhancement for nabi
 #
-# This file adds runtime-aware completion to nabi CLI by querying external sources.
-# It's loaded after the base _nabi completion to provide:
-# - Service names for `nabi port shift` from the port registry
-# - Session names for `nabi tmux send-prompt` and `nabi tmux list windows/panes`
-# - Window lists for context-aware selection
-# - Pane targets in full session:window.pane format
-#
-# This hooks into the clap-generated completions by overriding the _nabi function
-# to add dynamic completions for specific arguments.
+# This file defines completion functions for dynamic arguments that require runtime queries.
+# The justfile post-processes the clap-generated completion file to call these functions.
 #
 # Supported dynamic completions:
 # - `nabi port shift <SERVICE>` — Service names from port registry
 # - `nabi tmux send-prompt <PANE>` — Tmux session:window.pane targets
 # - `nabi events ack <EVENT_ID>` — Event IDs from event storage
+# - `nabi exec <TOOL>` — Registered tool IDs
+# - `nabi tool exec <TOOL>` — Registered tool IDs
 
 # XDG-compliant cache directory (matches Rust codebase)
 _NABI_CACHE_DIR="${XDG_CACHE_HOME:-${HOME}/.cache}/nabi"
@@ -33,84 +28,40 @@ _nabi_debug_log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$_NABI_COMPLETION_DEBUG_LOG"
 }
 
-# Define completion function for pane argument
-# This will be called when zsh completes the pane argument
-_nabi_tmux_send_prompt_pane_completion() {
-    _nabi_debug_log "_nabi_tmux_send_prompt_pane_completion called"
+# ============================================================================
+# Completion Function Definitions
+# ============================================================================
+# These functions are called directly by the post-processed completion file.
+# No overriding _nabi needed - just define the functions!
+
+# Completion for: nabi tmux send-prompt <PANE>
+_nabi__tmux__send_prompt_pane() {
     _nabi_tmux_send_prompt_pane
 }
 
-# Hook into the main _nabi completion function to override pane argument
-if (( $+functions[_nabi] )); then
-    # Store original _nabi function
-    if (( ! $+functions[_nabi_original] )); then
-        functions[_nabi_original]=$functions[_nabi]
-    fi
+# Completion for: nabi port shift <SERVICE>
+_nabi__port__shift_service() {
+    _nabi_port_shift_service
+}
 
-    # Override _nabi to replace :pane: with our completion function
-    _nabi() {
-        _nabi_debug_log "_nabi called: context=$curcontext, CURRENT=$CURRENT, words=${words[@]}"
+# Completion for: nabi exec <TOOL>
+_nabi__exec_tool() {
+    _nabi_tool_exec_tool_completion
+}
 
-        # Check if we're completing service argument for port shift
-        if [[ "${words[1]}" == "nabi" ]] && \
-           [[ "${words[2]}" == "port" ]] && \
-           [[ "${words[3]}" == "shift" ]] && \
-           [[ $CURRENT -eq 4 ]]; then
-            _nabi_debug_log "Detected port shift service completion, calling our function"
-            _nabi_port_shift_service
-            return 0
-        fi
+# Completion for: nabi tool exec <TOOL>
+_nabi__tool__exec_tool() {
+    _nabi_tool_exec_tool_completion
+}
 
-        # Check if we're completing pane argument for send-prompt
-        if [[ "${words[1]}" == "nabi" ]] && \
-           [[ "${words[2]}" == "tmux" ]] && \
-           [[ "${words[3]}" == "send-prompt" ]] && \
-           [[ $CURRENT -eq 4 ]]; then
-            _nabi_debug_log "Detected send-prompt pane completion, calling our function"
-            _nabi_tmux_send_prompt_pane
-            return 0
-        fi
+# Completion for: nabi events ack <EVENT_ID>
+_nabi__events__ack_event_id() {
+    _nabi_events_ack_event_id
+}
 
-        # Check if we're completing event ID for events ack
-        if [[ "${words[1]}" == "nabi" ]] && \
-           [[ "${words[2]}" == "events" ]] && \
-           [[ "${words[3]}" == "ack" ]] && \
-           [[ $CURRENT -eq 4 ]]; then
-            _nabi_debug_log "Detected events ack event ID completion, calling our function"
-            if (( $+functions[_nabi_events_ack_event_id] )); then
-                _nabi_events_ack_event_id
-                return 0
-            fi
-        fi
-
-        # Check if we're completing tool argument for top-level: nabi exec <TOOL>
-        if [[ "${words[1]}" == "nabi" ]] && \
-           [[ "${words[2]}" == "exec" ]] && \
-           [[ $CURRENT -eq 3 ]]; then
-            _nabi_debug_log "Detected nabi exec tool completion, calling our function"
-            if (( $+functions[_nabi_tool_exec_tool_completion] )); then
-                _nabi_tool_exec_tool_completion
-                return 0
-            fi
-        fi
-
-        # Check if we're completing tool argument for nested: nabi tool exec <TOOL>
-        if [[ "${words[1]}" == "nabi" ]] && \
-           [[ "${words[2]}" == "tool" ]] && \
-           [[ "${words[3]}" == "exec" ]] && \
-           [[ $CURRENT -eq 4 ]]; then
-            _nabi_debug_log "Detected nabi tool exec tool completion, calling our function"
-            if (( $+functions[_nabi_tool_exec_tool_completion] )); then
-                _nabi_tool_exec_tool_completion
-                return 0
-            fi
-        fi
-
-        # For other cases, call original
-        # Note: nabi exec dynamic tool completion is handled by Rust-generated completions
-        _nabi_original "$@"
-    }
-fi
+# ============================================================================
+# Helper Functions
+# ============================================================================
 
 # Cache file for tmux data (2 second TTL for fast updates)
 # XDG-compliant: uses $XDG_CACHE_HOME/nabi or ~/.cache/nabi
@@ -348,19 +299,14 @@ _nabi_events_ack_event_id() {
     _describe 'event ID' event_ids
 }
 
-# Dynamic tool completion function (ensure it's defined here too)
-# This may be defined in the Rust-generated completions, but we redefine it here to be safe
-if (( ! $+functions[_nabi_dynamic_tools] )); then
-    _nabi_dynamic_tools() {
-        local tools
-        tools=(${(f)"$(nabi tool list --format=json 2>/dev/null | jq -r '.tools[] | .id + ":" + .description' 2>/dev/null)"})
-        _describe 'registered tools' tools
-    }
-fi
+# Dynamic tool completion function
+_nabi_dynamic_tools() {
+    local tools
+    tools=(${(f)"$(nabi tool list --format=json 2>/dev/null | jq -r '.tools[] | .id + ":" + .description' 2>/dev/null)"})
+    _describe 'registered tools' tools
+}
 
-# Completion for tool argument of: nabi tool exec <TOOL>
-# This is trickier because the Rust completions use :_default for the tool arg
-# We intercept at the _default level to provide tool completions
+# Completion for tool argument of: nabi exec <TOOL> and nabi tool exec <TOOL>
 _nabi_tool_exec_tool_completion() {
     local tools
     tools=(${(f)"$(nabi tool list --format=json 2>/dev/null | jq -r '.tools[] | .id + ":" + .description' 2>/dev/null)"})
@@ -372,20 +318,3 @@ _nabi_tool_exec_tool_completion() {
 
     _describe 'tool' tools
 }
-
-# Override exec commands to use dynamic tool completion
-# Note: This must be done after compinit loads the base _nabi__exec_commands
-# The Rust-generated version can't override due to zsh's function guards
-(( $+functions[_nabi__exec_commands] )) && unfunction _nabi__exec_commands
-_nabi__exec_commands() {
-    _nabi_dynamic_tools
-}
-
-# Also override tool exec commands for: nabi tool exec <TOOL> (subcommands, not the tool arg)
-(( $+functions[_nabi__tool__exec_commands] )) && unfunction _nabi__tool__exec_commands
-_nabi__tool__exec_commands() {
-    _nabi_dynamic_tools
-}
-
-# Note: We don't override _default anymore since we handle everything in _nabi() override
-# The _nabi() override catches the service and pane argument completion before _default is called

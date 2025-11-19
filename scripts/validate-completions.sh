@@ -147,11 +147,12 @@ else
     exit 2
 fi
 
-# Check 6: Dynamic override hooks
-if grep -q "if (( \$+functions\[_nabi\] ))" "$OUTPUT_FILE"; then
-    pass "Dynamic override mechanism intact"
+# Check 6: Dynamic completion functions (new unified strategy)
+# Check for specific completion functions that are called by post-processed file
+if grep -q "_nabi__tmux__send_prompt_pane\|_nabi__port__shift_service\|_nabi__exec_tool\|_nabi__events__ack_event_id" "$OUTPUT_FILE"; then
+    pass "Dynamic completion functions present (unified strategy)"
 else
-    fail "Dynamic override mechanism MISSING - dynamic features won't work"
+    fail "Dynamic completion functions MISSING - dynamic features won't work"
     exit 2
 fi
 
