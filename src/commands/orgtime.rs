@@ -2,7 +2,6 @@
 ///
 /// Renames files/directories using their latest modification time as prefix
 /// followed by inferred topology categories for better chronological ordering.
-
 use anyhow::{Context, Result};
 use colored::Colorize;
 use std::collections::HashMap;
@@ -13,9 +12,21 @@ use std::process::Command;
 /// Common topology categories for automatic inference
 // TODO make this this dynamic based off a schema toml file in xdg config nabi
 const TOPOLOGY_CATEGORIES: &[&str] = &[
-    "inventory", "architecture", "observability", "guardian", "activation",
-    "link-mapper", "discovery", "coordination", "migration", "setup",
-    "configuration", "deployment", "monitoring", "analysis", "strategy",
+    "inventory",
+    "architecture",
+    "observability",
+    "guardian",
+    "activation",
+    "link-mapper",
+    "discovery",
+    "coordination",
+    "migration",
+    "setup",
+    "configuration",
+    "deployment",
+    "monitoring",
+    "analysis",
+    "strategy",
 ];
 
 /// Run the orgtime command
@@ -53,9 +64,22 @@ fn process_single_file(
     preserve_times: bool,
     dry_run: bool,
 ) -> Result<()> {
+    if !is_supported_file(file_path) {
+        println!(
+            "⚠️ Skipping {} (only .md and .txt files are processed)",
+            file_path.display()
+        );
+        return Ok(());
+    }
+
     let category = category.unwrap_or_else(|| infer_category_from_filename(file_path));
     let timestamp = get_file_timestamp(file_path)?;
-    let new_name = format!("{}_{}_{}", timestamp, category, file_path.file_name().unwrap().to_string_lossy());
+    let new_name = format!(
+        "{}_{}_{}",
+        timestamp,
+        category,
+        file_path.file_name().unwrap().to_string_lossy()
+    );
 
     println!("📁 {} → {}", file_path.display(), new_name.green());
 
@@ -84,13 +108,27 @@ fn process_directory_files(
         let path = entry.path();
 
         if path.is_file() {
-            let file_category = category.clone().unwrap_or_else(|| infer_category_from_filename(&path));
+            if !is_supported_file(&path) {
+                println!(
+                    "⚪ Skipping {} (unsupported extension)",
+                    path.strip_prefix(dir_path)?.display()
+                );
+                continue;
+            }
+
+            let file_category = category
+                .clone()
+                .unwrap_or_else(|| infer_category_from_filename(&path));
             let timestamp = get_file_timestamp(&path)?;
             let file_name = path.file_name().unwrap().to_string_lossy();
             let new_name = format!("{}_{}_{}", timestamp, file_category, file_name);
             let new_path = dir_path.join(&new_name);
 
-            println!("📄 {} → {}", path.strip_prefix(dir_path)?.display(), new_name.green());
+            println!(
+                "📄 {} → {}",
+                path.strip_prefix(dir_path)?.display(),
+                new_name.green()
+            );
 
             if !dry_run {
                 if preserve_times {
@@ -104,7 +142,11 @@ fn process_directory_files(
         }
     }
 
-    println!("\n✅ Processed {} files in {}", files_processed, dir_path.display());
+    println!(
+        "\n✅ Processed {} files in {}",
+        files_processed,
+        dir_path.display()
+    );
     Ok(())
 }
 
@@ -195,7 +237,10 @@ fn infer_category_from_filename(path: &Path) -> String {
         }
     } else if filename.ends_with(".txt") || filename.ends_with(".log") {
         "logs".to_string()
-    } else if filename.ends_with(".json") || filename.ends_with(".yaml") || filename.ends_with(".yml") {
+    } else if filename.ends_with(".json")
+        || filename.ends_with(".yaml")
+        || filename.ends_with(".yml")
+    {
         "configuration".to_string()
     } else {
         "misc".to_string()
@@ -204,7 +249,11 @@ fn infer_category_from_filename(path: &Path) -> String {
 
 /// Infer category from directory name and contents
 fn infer_category_from_directory(dir_path: &Path) -> String {
-    let dir_name = dir_path.file_name().unwrap().to_string_lossy().to_lowercase();
+    let dir_name = dir_path
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .to_lowercase();
 
     // Check directory name
     for category in TOPOLOGY_CATEGORIES {
@@ -266,4 +315,15 @@ fn preserve_rename(from: &Path, to: &Path) -> Result<()> {
         .context("Failed to restore timestamp")?;
 
     Ok(())
+}
+
+/// Determine whether the file is one of the supported text formats
+fn is_supported_file(path: &Path) -> bool {
+    match path.extension().and_then(|ext| ext.to_str()) {
+        Some(ext) => {
+            let ext_lower = ext.to_ascii_lowercase();
+            ext_lower == "md" || ext_lower == "txt"
+        }
+        None => false,
+    }
 }
