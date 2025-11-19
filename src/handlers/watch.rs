@@ -1,8 +1,7 @@
+use crate::routing::route_to_commander;
 /// Watch command handler
-
 use anyhow::Result;
 use colored::*;
-use crate::routing::route_to_commander;
 
 pub fn handle_watch(path: Option<String>) -> Result<()> {
     println!("{}", "👁  Watching filesystem...".cyan().bold());

@@ -1,10 +1,13 @@
+use crate::routing::route_to_commander;
 /// Scan command handler
-
 use anyhow::Result;
 use colored::*;
-use crate::routing::route_to_commander;
 
-pub fn handle_scan(path: Option<String>, tags: Option<String>, confidence: Option<f32>) -> Result<()> {
+pub fn handle_scan(
+    path: Option<String>,
+    tags: Option<String>,
+    confidence: Option<f32>,
+) -> Result<()> {
     println!("{}", "🔍 Scanning filesystem...".cyan().bold());
     let mut args: Vec<&str> = vec!["scan"];
     let mut path_str = String::new();

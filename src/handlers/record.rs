@@ -1,9 +1,8 @@
+use crate::cli::{ConfigActions, RecordCommands, ServerActions};
+use crate::routing::route_to_commander;
 /// Record command handlers
-
 use anyhow::Result;
 use colored::*;
-use crate::cli::{RecordCommands, ServerActions, ConfigActions};
-use crate::routing::route_to_commander;
 
 pub fn handle_record(command: RecordCommands) -> Result<()> {
     match command {
@@ -47,7 +46,10 @@ pub fn handle_record(command: RecordCommands) -> Result<()> {
                 route_to_commander("record", &["config", "show"])
             }
             ConfigActions::Set { key, value } => {
-                println!("{}", format!("✏️  Setting {} = {}...", key, value).cyan().bold());
+                println!(
+                    "{}",
+                    format!("✏️  Setting {} = {}...", key, value).cyan().bold()
+                );
                 route_to_commander("record", &["config", "set", &key, &value])
             }
         },

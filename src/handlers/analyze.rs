@@ -1,7 +1,6 @@
-/// Analyze command handlers
-
-use anyhow::Result;
 use crate::repo;
+/// Analyze command handlers
+use anyhow::Result;
 
 // Note: This handler works with types from cli.rs
 // For main.rs compatibility, we also have an inline handler

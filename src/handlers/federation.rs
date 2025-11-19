@@ -1,9 +1,8 @@
+use crate::cli::{AgentActions, FederationCommands, RegistryActions, SyncActions};
+use crate::routing::route_to_commander;
 /// Federation command handlers
-
 use anyhow::Result;
 use colored::*;
-use crate::cli::{FederationCommands, AgentActions, SyncActions, RegistryActions};
-use crate::routing::route_to_commander;
 
 pub fn handle_federation(command: FederationCommands) -> Result<()> {
     match command {
@@ -13,7 +12,10 @@ pub fn handle_federation(command: FederationCommands) -> Result<()> {
                 route_to_commander("federation", &["agent", "list"])
             }
             AgentActions::Spawn { role } => {
-                println!("{}", format!("🚀 Spawning {} agent...", role).magenta().bold());
+                println!(
+                    "{}",
+                    format!("🚀 Spawning {} agent...", role).magenta().bold()
+                );
                 route_to_commander("federation", &["agent", "spawn", &role])
             }
         },
@@ -23,11 +25,17 @@ pub fn handle_federation(command: FederationCommands) -> Result<()> {
                 route_to_commander("federation", &["sync", "list"])
             }
             SyncActions::Pause { folder } => {
-                println!("{}", format!("⏸️  Pausing folder {}...", folder).yellow().bold());
+                println!(
+                    "{}",
+                    format!("⏸️  Pausing folder {}...", folder).yellow().bold()
+                );
                 route_to_commander("federation", &["sync", "pause", &folder])
             }
             SyncActions::Resume { folder } => {
-                println!("{}", format!("▶️  Resuming folder {}...", folder).green().bold());
+                println!(
+                    "{}",
+                    format!("▶️  Resuming folder {}...", folder).green().bold()
+                );
                 route_to_commander("federation", &["sync", "resume", &folder])
             }
             SyncActions::Status { folder } => {
@@ -50,8 +58,16 @@ pub fn handle_federation(command: FederationCommands) -> Result<()> {
                 route_to_commander("federation", &["registry", "health"])
             }
             RegistryActions::Add { name, service_type } => {
-                println!("{}", format!("➕ Adding {} ({})...", name, service_type).green().bold());
-                route_to_commander("federation", &["registry", "add", &name, "--type", &service_type])
+                println!(
+                    "{}",
+                    format!("➕ Adding {} ({})...", name, service_type)
+                        .green()
+                        .bold()
+                );
+                route_to_commander(
+                    "federation",
+                    &["registry", "add", &name, "--type", &service_type],
+                )
             }
             RegistryActions::Remove { name } => {
                 println!("{}", format!("➖ Removing {}...", name).red().bold());

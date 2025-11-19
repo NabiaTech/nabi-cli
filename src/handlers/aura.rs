@@ -1,10 +1,9 @@
-/// Aura command handlers
-// AURA Switch implementation - Phase C completion
-
-use anyhow::Result;
-use colored::*;
 use crate::cli::AuraCommands;
 use crate::routing::route_to_commander;
+/// Aura command handlers
+// AURA Switch implementation - Phase C completion
+use anyhow::Result;
+use colored::*;
 
 pub fn handle_aura(command: AuraCommands) -> Result<()> {
     match command {
@@ -21,7 +20,10 @@ pub fn handle_aura(command: AuraCommands) -> Result<()> {
             route_to_commander("aura", &["create", &name])
         }
         AuraCommands::Switch { name, force } => {
-            println!("{}", format!("🔄 Switching to AURA: {}...", name).cyan().bold());
+            println!(
+                "{}",
+                format!("🔄 Switching to AURA: {}...", name).cyan().bold()
+            );
             let mut args = vec!["switch", &name];
             let force_str = String::from("--force");
             if force {

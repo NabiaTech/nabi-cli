@@ -1,9 +1,8 @@
-/// Configure command handlers
-
-use anyhow::Result;
-use colored::*;
 use crate::cli::ConfigureCommands;
 use crate::routing::route_to_commander;
+/// Configure command handlers
+use anyhow::Result;
+use colored::*;
 
 pub fn handle_configure(command: ConfigureCommands) -> Result<()> {
     match command {
@@ -12,7 +11,10 @@ pub fn handle_configure(command: ConfigureCommands) -> Result<()> {
             route_to_commander("configure", &["show"])
         }
         ConfigureCommands::Set { key, value } => {
-            println!("{}", format!("✏️  Setting {} = {}...", key, value).cyan().bold());
+            println!(
+                "{}",
+                format!("✏️  Setting {} = {}...", key, value).cyan().bold()
+            );
             route_to_commander("configure", &["set", &key, &value])
         }
         ConfigureCommands::Reset => {

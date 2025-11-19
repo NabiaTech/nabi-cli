@@ -1,11 +1,10 @@
-/// Self-management command handlers
-
-use anyhow::Result;
-use colored::*;
 use crate::cli::SelfCommands;
 use crate::paths::NabiPaths;
 use crate::routing::{check_commander, update_commander};
 use crate::spec::handle_spec;
+/// Self-management command handlers
+use anyhow::Result;
+use colored::*;
 
 fn check_xdg_compliance() -> Result<()> {
     let mut violations = Vec::new();
@@ -18,15 +17,21 @@ fn check_xdg_compliance() -> Result<()> {
     if config_venv.exists() {
         let config_venv_path = NabiPaths::config_dir()?.join(".venv");
         violations.push((
-            format!("Broken .venv in config directory: {}", config_venv.display()),
-            format!("rm -rf {}", config_venv_path.display())
+            format!(
+                "Broken .venv in config directory: {}",
+                config_venv.display()
+            ),
+            format!("rm -rf {}", config_venv_path.display()),
         ));
     }
 
     if nabi_venv.exists() {
         violations.push((
-            format!("Broken .venv in .nabi subdirectory: {}", nabi_venv.display()),
-            format!("rm -rf {}", nabi_venv.display())
+            format!(
+                "Broken .venv in .nabi subdirectory: {}",
+                nabi_venv.display()
+            ),
+            format!("rm -rf {}", nabi_venv.display()),
         ));
     }
 
