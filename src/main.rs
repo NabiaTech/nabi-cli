@@ -3037,22 +3037,32 @@ fn handle_scan(
         }
     }
 
+    if tags.is_some() || confidence.is_some() {
+        anyhow::bail!(
+            "Metadata tagging (--tags / --confidence) is not available yet. \
+             Please run without these flags."
+        );
+    }
+
     println!("{}", "🔍 Scanning filesystem...".cyan().bold());
-    let mut args = vec!["scan".to_string()];
+    let mut args: Vec<String> = Vec::new();
     if let Some(p) = path {
         args.push(p);
     }
-    if let Some(t) = tags {
-        args.push("--tags".to_string());
-        args.push(t);
+
+    if let Some(types) = type_filter {
+        if !types.is_empty() {
+            args.push("--type".to_string());
+            args.push(types.join(","));
+        }
     }
-    if let Some(c) = confidence {
-        args.push("--confidence".to_string());
-        args.push(c.to_string());
+
+    if let Some(q) = query {
+        args.push(q);
     }
 
     let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    route_to_python_cli(&arg_refs)
+    route_to_commander("scan", &arg_refs)
 }
 
 fn handle_scan_all() -> Result<()> {
