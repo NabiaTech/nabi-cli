@@ -1,12 +1,11 @@
+use crate::commands::{events, kernel, tmux};
 /// CLI command definitions
 ///
 /// This module contains all the command enum definitions for the nabi CLI.
 /// These are separated from handlers to keep the codebase modular and maintainable.
-
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use std::fmt;
 use std::path::{Path, PathBuf};
-use crate::commands::{events, kernel, tmux};
 
 /// nabi - Unified Federation Command Gateway
 ///
@@ -325,7 +324,6 @@ pub enum FederationCommands {
         action: RegistryActions,
     },
     /// Federation-wide health substrates
-
     Health,
     /// Show status of all federation nodes
     Status,
@@ -972,7 +970,6 @@ pub enum HealthCommands {
 
     /// [DEPRECATED] Use 'health substrate' instead
     /// Run federation substrate health substrates
-
     Check {
         /// Auto-remediate critical issues
         #[arg(long)]
@@ -982,7 +979,6 @@ pub enum HealthCommands {
         fsm_only: bool,
     },
     /// Show health substrate status and recent reports
-
     Status {
         /// Show detailed results
         #[arg(short, long)]

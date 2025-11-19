@@ -2101,8 +2101,9 @@ fn handle_send_prompt_from_buffer(file: Option<&str>, delay: u64) -> Result<()> 
             anyhow::bail!("Cannot resolve shorthand target '{}': not in a tmux session. Use full format 'session:window.pane'", target);
         }
 
-        let session = context.session_name
-            .ok_or_else(|| anyhow::anyhow!("Cannot determine current session for shorthand target"))?;
+        let session = context.session_name.ok_or_else(|| {
+            anyhow::anyhow!("Cannot determine current session for shorthand target")
+        })?;
 
         // Prepend session name to shorthand target
         target = format!("{}{}", session, target);
@@ -2420,8 +2421,8 @@ fn handle_split_pane(
     format: &str,
 ) -> Result<()> {
     // Step 1: Validate pane format
-    let (session, window, _pane_idx) = parse_pane_target(pane)
-        .with_context(|| format!("Invalid pane target '{}'", pane))?;
+    let (session, window, _pane_idx) =
+        parse_pane_target(pane).with_context(|| format!("Invalid pane target '{}'", pane))?;
 
     // Step 2: Validate and normalize direction
     let (direction_flag, direction_label) = match direction.to_lowercase().as_str() {
@@ -2484,12 +2485,7 @@ fn handle_split_pane(
 
     // Get the last pane index (the new one)
     let pane_list = String::from_utf8_lossy(&list_output.stdout);
-    let new_pane_idx = pane_list
-        .lines()
-        .last()
-        .unwrap_or("1")
-        .trim()
-        .to_string();
+    let new_pane_idx = pane_list.lines().last().unwrap_or("1").trim().to_string();
 
     let new_pane_target = format!("{}:{}.{}", session, window, new_pane_idx);
 
@@ -2507,7 +2503,11 @@ fn handle_split_pane(
             println!("{}", serde_json::to_string_pretty(&result)?);
         }
         "text" | _ => {
-            let cmd_info = if command.is_some() { " (with command)" } else { "" };
+            let cmd_info = if command.is_some() {
+                " (with command)"
+            } else {
+                ""
+            };
             println!(
                 "✓ Split pane {} ({}): {} → {}{}",
                 pane, direction_label, size_percent, new_pane_target, cmd_info
