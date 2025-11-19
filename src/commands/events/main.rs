@@ -188,6 +188,30 @@ fn get_event_store_path() -> Result<PathBuf> {
     Ok(state_dir.join("event_stream.jsonl"))
 }
 
+fn get_approved_event_sources() -> Vec<&'static str> {
+    // Canonical approved event sources from ~/.config/nabi/hooks/federation-events-synapse-monitor.toml
+    vec![
+        "doc-fsm",
+        "transform-pipeline",
+        "config-transform",
+        "vault-sync",
+        "federation-sync",
+        "federation-coordination",
+    ]
+}
+
+fn validate_event_source(source: &str) -> Result<()> {
+    let approved = get_approved_event_sources();
+    if !approved.contains(&source) {
+        return Err(anyhow::anyhow!(
+            "Event source '{}' is not approved.\n\nApproved sources:\n  {}",
+            source,
+            approved.join("\n  ")
+        ));
+    }
+    Ok(())
+}
+
 fn handle_publish(
     source: String,
     severity: EventSeverity,
@@ -196,12 +220,19 @@ fn handle_publish(
     timestamp: Option<String>,
     stdin: bool,
 ) -> Result<()> {
+    // Validate source against canonical schema (unless reading from stdin)
+    if !stdin {
+        validate_event_source(&source)?;
+    }
+
     let event = if stdin {
         // Read event from stdin
         let stdin = std::io::stdin();
         let reader = stdin.lock();
         let event: Event = serde_json::from_reader(reader)
             .context("Failed to parse event JSON from stdin")?;
+        // Still validate stdin events
+        validate_event_source(&event.source)?;
         event
     } else {
         // Build event from CLI args

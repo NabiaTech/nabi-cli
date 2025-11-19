@@ -14,7 +14,6 @@
 /// - list: List available backups with metadata
 /// - config: Show/validate configuration
 /// - queue: Monitor NATS backup queue
-
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
 use colored::Colorize;
@@ -45,7 +44,7 @@ pub struct ExternalDrive {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArchiveSettings {
-    pub formats: Vec<String>, // "ditto.zip", "tar.tgz"
+    pub formats: Vec<String>,  // "ditto.zip", "tar.tgz"
     pub compression_level: u8, // 1-9
     pub exclusions: Vec<String>,
     pub naming_pattern: String, // {timestamp}-{mode}-{hash}
@@ -71,13 +70,13 @@ pub struct SchedulingConfig {
 pub struct BackupMetadata {
     pub id: String,
     pub timestamp: String,
-    pub mode: String,      // "xdg", "full", "incremental"
+    pub mode: String, // "xdg", "full", "incremental"
     pub sources_count: usize,
     pub total_size_bytes: u64,
-    pub format: String,    // "ditto.zip", "tar.tgz", "dual"
+    pub format: String, // "ditto.zip", "tar.tgz", "dual"
     pub checksum: String,
     pub external_drive: Option<String>,
-    pub status: String,    // "created", "verified", "archived"
+    pub status: String, // "created", "verified", "archived"
 }
 
 // ============================================================================
@@ -93,10 +92,19 @@ pub fn cmd_create(
 ) -> Result<()> {
     let mode = mode.unwrap_or("xdg");
 
-    println!("{}Creating backup with mode: {}{}", "→ ".bright_cyan(), mode.bright_yellow(), "");
+    println!(
+        "{}Creating backup with mode: {}{}",
+        "→ ".bright_cyan(),
+        mode.bright_yellow(),
+        ""
+    );
 
     if dry_run {
-        println!("{}DRY RUN - No changes will be made{}", "  ⚠️  ".bright_yellow(), "");
+        println!(
+            "{}DRY RUN - No changes will be made{}",
+            "  ⚠️  ".bright_yellow(),
+            ""
+        );
     }
 
     // Load configuration
@@ -119,16 +127,26 @@ pub fn cmd_create(
     // Validate external drive if requested
     if external {
         let drives = detect_external_drives()?;
-        println!("{}Found {} external drive(s)", "  ✓ ".bright_green(), drives.len().to_string().bright_cyan());
+        println!(
+            "{}Found {} external drive(s)",
+            "  ✓ ".bright_green(),
+            drives.len().to_string().bright_cyan()
+        );
         for drive in &drives {
-            println!("     - {} ({} GB) at {}", drive.label, drive.capacity_gb, drive.mount_path);
+            println!(
+                "     - {} ({} GB) at {}",
+                drive.label, drive.capacity_gb, drive.mount_path
+            );
         }
     }
 
     // Show what would be archived
     println!("\n{}Archive settings:", "→ ".bright_cyan());
     println!("  Format: {}", config.archive_settings.formats.join(", "));
-    println!("  Compression: {}", config.archive_settings.compression_level);
+    println!(
+        "  Compression: {}",
+        config.archive_settings.compression_level
+    );
     println!("  Naming: {}", config.archive_settings.naming_pattern);
 
     if !dry_run {
@@ -141,13 +159,21 @@ pub fn cmd_create(
             total_size_bytes: 0, // Would calculate in real implementation
             format: "dual".to_string(),
             checksum: String::new(),
-            external_drive: if external { Some("auto-detect".to_string()) } else { None },
+            external_drive: if external {
+                Some("auto-detect".to_string())
+            } else {
+                None
+            },
             status: "created".to_string(),
         };
 
         // Save metadata
         save_backup_metadata(&metadata)?;
-        println!("\n{}Backup created: {}", "✓ ".bright_green(), metadata.id.bright_cyan());
+        println!(
+            "\n{}Backup created: {}",
+            "✓ ".bright_green(),
+            metadata.id.bright_cyan()
+        );
     } else {
         println!("\n{}Backup would be created (dry-run)", "→ ".bright_cyan());
     }
@@ -201,28 +227,44 @@ pub fn cmd_list(format: Option<&str>) -> Result<()> {
 }
 
 /// Restore from a backup
-pub fn cmd_restore(
-    backup_id: &str,
-    target: Option<&str>,
-    dry_run: bool,
-) -> Result<()> {
-    println!("{}Restoring backup: {}", "→ ".bright_cyan(), backup_id.bright_yellow());
+pub fn cmd_restore(backup_id: &str, target: Option<&str>, dry_run: bool) -> Result<()> {
+    println!(
+        "{}Restoring backup: {}",
+        "→ ".bright_cyan(),
+        backup_id.bright_yellow()
+    );
 
     if dry_run {
-        println!("{}DRY RUN - No changes will be made{}", "  ⚠️  ".bright_yellow(), "");
+        println!(
+            "{}DRY RUN - No changes will be made{}",
+            "  ⚠️  ".bright_yellow(),
+            ""
+        );
     }
 
     // Load backup metadata
     let metadata = load_backup_metadata(backup_id)?;
-    println!("{}Backup found: {} ({})", "  ✓ ".bright_green(), metadata.id, metadata.timestamp);
-    println!("  Mode: {}, Size: {}", metadata.mode, format_size_bytes(metadata.total_size_bytes));
+    println!(
+        "{}Backup found: {} ({})",
+        "  ✓ ".bright_green(),
+        metadata.id,
+        metadata.timestamp
+    );
+    println!(
+        "  Mode: {}, Size: {}",
+        metadata.mode,
+        format_size_bytes(metadata.total_size_bytes)
+    );
 
     if let Some(target_path) = target {
         println!("  Restore target: {}", target_path);
     }
 
     if !dry_run {
-        println!("\n{}Extraction would proceed (not implemented in Phase 1)", "→ ".bright_cyan());
+        println!(
+            "\n{}Extraction would proceed (not implemented in Phase 1)",
+            "→ ".bright_cyan()
+        );
     }
 
     Ok(())
@@ -247,9 +289,18 @@ pub fn cmd_config(validate: bool) -> Result<()> {
     }
 
     println!("\n{}Archive Settings:", "  ".bright_cyan());
-    println!("    - Formats: {}", config.archive_settings.formats.join(", "));
-    println!("    - Compression: {}", config.archive_settings.compression_level);
-    println!("    - Exclusions: {} patterns", config.archive_settings.exclusions.len());
+    println!(
+        "    - Formats: {}",
+        config.archive_settings.formats.join(", ")
+    );
+    println!(
+        "    - Compression: {}",
+        config.archive_settings.compression_level
+    );
+    println!(
+        "    - Exclusions: {} patterns",
+        config.archive_settings.exclusions.len()
+    );
 
     println!("\n{}Storage Mesh:", "  ".bright_cyan());
     println!("    - Enabled: {}", config.storage_mesh.enabled);
@@ -274,7 +325,10 @@ pub fn cmd_config(validate: bool) -> Result<()> {
 /// Monitor NATS backup queue (Phase 2)
 pub fn cmd_queue(action: Option<&str>) -> Result<()> {
     let _action = action.unwrap_or("status");
-    println!("{}Queue command not yet implemented (Phase 2)", "⚠️  ".bright_yellow());
+    println!(
+        "{}Queue command not yet implemented (Phase 2)",
+        "⚠️  ".bright_yellow()
+    );
     println!("  This will integrate with NATS for federation-wide backup coordination");
     Ok(())
 }
@@ -284,9 +338,7 @@ pub fn cmd_queue(action: Option<&str>) -> Result<()> {
 // ============================================================================
 
 fn load_backup_config() -> Result<BackupConfig> {
-    let config_path = NabiPaths::config_dir()?
-        .join("backup")
-        .join("config.toml");
+    let config_path = NabiPaths::config_dir()?.join("backup").join("config.toml");
 
     if !config_path.exists() {
         // Return default config if not found
@@ -319,19 +371,26 @@ fn load_backup_config() -> Result<BackupConfig> {
         });
     }
 
-    let content = fs::read_to_string(&config_path)
-        .context("Failed to read backup configuration")?;
+    let content =
+        fs::read_to_string(&config_path).context("Failed to read backup configuration")?;
 
-    let config: BackupConfig = toml::from_str(&content)
-        .context("Failed to parse backup configuration")?;
+    let config: BackupConfig =
+        toml::from_str(&content).context("Failed to parse backup configuration")?;
 
     Ok(config)
 }
 
-fn determine_sources(mode: &str, targets: Option<&str>, config: &BackupConfig) -> Result<Vec<String>> {
+fn determine_sources(
+    mode: &str,
+    targets: Option<&str>,
+    config: &BackupConfig,
+) -> Result<Vec<String>> {
     if let Some(target_list) = targets {
         // Use explicitly specified targets
-        Ok(target_list.split(',').map(|s| s.trim().to_string()).collect())
+        Ok(target_list
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .collect())
     } else {
         // Use mode-based defaults
         match mode {
@@ -365,17 +424,13 @@ fn generate_backup_id() -> String {
 }
 
 fn save_backup_metadata(metadata: &BackupMetadata) -> Result<()> {
-    let manifest_dir = NabiPaths::state_dir()?
-        .join("backup")
-        .join("manifests");
+    let manifest_dir = NabiPaths::state_dir()?.join("backup").join("manifests");
 
-    fs::create_dir_all(&manifest_dir)
-        .context("Failed to create backup manifest directory")?;
+    fs::create_dir_all(&manifest_dir).context("Failed to create backup manifest directory")?;
 
     let metadata_path = manifest_dir.join(format!("{}.json", metadata.id));
     let json = serde_json::to_string_pretty(metadata)?;
-    fs::write(&metadata_path, json)
-        .context("Failed to write backup metadata")?;
+    fs::write(&metadata_path, json).context("Failed to write backup metadata")?;
 
     Ok(())
 }
@@ -386,19 +441,16 @@ fn load_backup_metadata(backup_id: &str) -> Result<BackupMetadata> {
         .join("manifests")
         .join(format!("{}.json", backup_id));
 
-    let content = fs::read_to_string(&metadata_path)
-        .context("Failed to read backup metadata")?;
+    let content = fs::read_to_string(&metadata_path).context("Failed to read backup metadata")?;
 
-    let metadata: BackupMetadata = serde_json::from_str(&content)
-        .context("Failed to parse backup metadata")?;
+    let metadata: BackupMetadata =
+        serde_json::from_str(&content).context("Failed to parse backup metadata")?;
 
     Ok(metadata)
 }
 
 fn load_backup_manifests() -> Result<Vec<BackupMetadata>> {
-    let manifest_dir = NabiPaths::state_dir()?
-        .join("backup")
-        .join("manifests");
+    let manifest_dir = NabiPaths::state_dir()?.join("backup").join("manifests");
 
     if !manifest_dir.exists() {
         return Ok(vec![]);
@@ -406,9 +458,7 @@ fn load_backup_manifests() -> Result<Vec<BackupMetadata>> {
 
     let mut backups = vec![];
 
-    for entry in fs::read_dir(&manifest_dir)
-        .context("Failed to read backup manifests")?
-    {
+    for entry in fs::read_dir(&manifest_dir).context("Failed to read backup manifests")? {
         let entry = entry?;
         let path = entry.path();
 
@@ -449,7 +499,9 @@ fn validate_config(config: &BackupConfig) -> Result<()> {
         return Err(anyhow!("No archive formats configured"));
     }
 
-    if config.archive_settings.compression_level < 1 || config.archive_settings.compression_level > 9 {
+    if config.archive_settings.compression_level < 1
+        || config.archive_settings.compression_level > 9
+    {
         return Err(anyhow!("Compression level must be 1-9"));
     }
 

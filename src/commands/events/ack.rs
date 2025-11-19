@@ -1,6 +1,7 @@
 /// Event Acknowledgment Layer - Agent D Critical Path
 /// Enables agents to acknowledge federation events with vector clock advancement
 use anyhow::{Context, Result};
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
@@ -8,7 +9,6 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write as IoWrite};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use chrono::Utc;
 use uuid::Uuid;
 
 /// Federation event with optional vector clock
@@ -60,8 +60,8 @@ pub fn execute_ack(
     json_output: bool,
 ) -> Result<()> {
     // 1. Load event from storage
-    let event = load_event(event_id)
-        .with_context(|| format!("Failed to load event: {}", event_id))?;
+    let event =
+        load_event(event_id).with_context(|| format!("Failed to load event: {}", event_id))?;
 
     // 2. Load existing acknowledgments for this event
     let existing_acks = load_acknowledgment_log(event_id)?;
@@ -104,14 +104,16 @@ pub fn execute_ack(
 
     // 6. Atomic append to JSONL acknowledgment log
     let ack_log_path = get_ack_log_path(event_id)?;
-    atomic_append_jsonl(&ack_log_path, &ack)
-        .context("Failed to write acknowledgment to log")?;
+    atomic_append_jsonl(&ack_log_path, &ack).context("Failed to write acknowledgment to log")?;
 
     // 7. Output result
     if json_output {
         println!("{}", serde_json::to_string_pretty(&ack)?);
     } else {
-        println!("\x1b[32m✓\x1b[0m Acknowledged event {} as {}", event_id, ack.ack_id);
+        println!(
+            "\x1b[32m✓\x1b[0m Acknowledged event {} as {}",
+            event_id, ack.ack_id
+        );
         println!("  Vector clock: {:?}", agent_vc);
         if !causally_after.is_empty() {
             println!("  Causally after: {:?}", causally_after);
@@ -181,7 +183,9 @@ fn load_event(event_id: &str) -> Result<FederationEvent> {
     for days_ago in 0..7 {
         let date = Utc::now() - chrono::Duration::days(days_ago);
         let date_str = date.format("%Y-%m-%d").to_string();
-        let event_path = state_base.join(&date_str).join(format!("{}.json", event_id));
+        let event_path = state_base
+            .join(&date_str)
+            .join(format!("{}.json", event_id));
 
         if event_path.exists() {
             let content = fs::read_to_string(&event_path)?;
@@ -288,7 +292,9 @@ fn get_ack_log_path(event_id: &str) -> Result<PathBuf> {
     for days_ago in 0..7 {
         let date = Utc::now() - chrono::Duration::days(days_ago);
         let date_str = date.format("%Y-%m-%d").to_string();
-        let event_path = state_base.join(&date_str).join(format!("{}.json", event_id));
+        let event_path = state_base
+            .join(&date_str)
+            .join(format!("{}.json", event_id));
 
         if event_path.exists() {
             return Ok(event_path.with_extension("ack.jsonl"));
@@ -297,7 +303,9 @@ fn get_ack_log_path(event_id: &str) -> Result<PathBuf> {
 
     // Default to today if event not found
     let today = Utc::now().format("%Y-%m-%d").to_string();
-    Ok(state_base.join(&today).join(format!("{}.ack.jsonl", event_id)))
+    Ok(state_base
+        .join(&today)
+        .join(format!("{}.ack.jsonl", event_id)))
 }
 
 /// Atomic append to JSONL file
@@ -396,8 +404,8 @@ if __name__ == "__main__":
     }
 
     let stdout = String::from_utf8(output.stdout)?;
-    let ancestors: Vec<usize> = serde_json::from_str(stdout.trim())
-        .context("Failed to parse reconciler output")?;
+    let ancestors: Vec<usize> =
+        serde_json::from_str(stdout.trim()).context("Failed to parse reconciler output")?;
 
     Ok(ancestors)
 }

@@ -3,12 +3,12 @@ pub mod ack;
 
 // Re-export everything from the main events module
 use anyhow::{Context, Result};
+use chrono::{DateTime, Duration, Utc};
 use clap::{Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write as IoWrite};
 use std::path::PathBuf;
-use chrono::{DateTime, Duration, Utc};
 use uuid::Uuid;
 
 #[derive(Subcommand)]
@@ -195,9 +195,7 @@ pub fn handle_events_commands(cmd: EventsCommands) -> Result<()> {
             metadata,
             json,
         } => {
-            let metadata_value = metadata
-                .map(|s| serde_json::from_str(&s))
-                .transpose()?;
+            let metadata_value = metadata.map(|s| serde_json::from_str(&s)).transpose()?;
             ack::execute_ack(&event_id, metadata_value, json)
         }
     }
@@ -227,8 +225,8 @@ fn handle_publish(
         // Read event from stdin
         let stdin = std::io::stdin();
         let reader = stdin.lock();
-        let mut event: Event = serde_json::from_reader(reader)
-            .context("Failed to parse event JSON from stdin")?;
+        let mut event: Event =
+            serde_json::from_reader(reader).context("Failed to parse event JSON from stdin")?;
         // Override ID even if provided in stdin (ensure uniqueness)
         event.id = event_id.clone();
         event
@@ -282,16 +280,11 @@ fn handle_publish(
 
     let event_file_path = state_dir.join(format!("{}.json", event.id));
     let event_json = serde_json::to_string_pretty(&event)?;
-    fs::write(&event_file_path, event_json)
-        .context("Failed to write individual event file")?;
+    fs::write(&event_file_path, event_json).context("Failed to write individual event file")?;
 
     println!(
         "{}✓{} Event published: [{}] {} (ID: {})",
-        "\x1b[32m",
-        "\x1b[0m",
-        event.source,
-        event.message,
-        event.id
+        "\x1b[32m", "\x1b[0m", event.source, event.message, event.id
     );
 
     Ok(())
@@ -344,13 +337,11 @@ fn handle_pull(
     let file = File::open(&store_path).context("Failed to open event store")?;
     let reader = BufReader::new(file);
 
-    let source_filters: Option<Vec<String>> = source_filter.map(|s| {
-        s.split(',').map(|x| x.trim().to_string()).collect()
-    });
+    let source_filters: Option<Vec<String>> =
+        source_filter.map(|s| s.split(',').map(|x| x.trim().to_string()).collect());
 
-    let severity_filters: Option<Vec<String>> = severity_filter.map(|s| {
-        s.split(',').map(|x| x.trim().to_lowercase()).collect()
-    });
+    let severity_filters: Option<Vec<String>> =
+        severity_filter.map(|s| s.split(',').map(|x| x.trim().to_lowercase()).collect());
 
     let mut events: Vec<Event> = Vec::new();
 
@@ -451,7 +442,8 @@ fn print_events_text(events: &[Event]) {
 fn print_events_compact(events: &[Event]) {
     for event in events {
         let time_str = event.timestamp.format("%H:%M:%S");
-        println!("[{}] [{:8}] [{}] {}",
+        println!(
+            "[{}] [{:8}] [{}] {}",
             time_str,
             format!("{:?}", event.severity),
             event.source,
@@ -531,7 +523,8 @@ fn handle_stats(format: OutputFormat) -> Result<()> {
 
     let mut total = 0;
     let mut by_source: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    let mut by_severity: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut by_severity: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
 
     for line in reader.lines() {
         let line = line?;
@@ -542,7 +535,9 @@ fn handle_stats(format: OutputFormat) -> Result<()> {
 
         total += 1;
         *by_source.entry(event.source.clone()).or_insert(0) += 1;
-        *by_severity.entry(format!("{:?}", event.severity)).or_insert(0) += 1;
+        *by_severity
+            .entry(format!("{:?}", event.severity))
+            .or_insert(0) += 1;
     }
 
     match format {

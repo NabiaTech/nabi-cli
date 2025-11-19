@@ -832,12 +832,10 @@ fn load_notification_config() -> Result<NotificationConfig> {
         });
     }
 
-    let contents = fs::read_to_string(&config_path)
-        .context("Failed to read kernel.toml")?;
+    let contents = fs::read_to_string(&config_path).context("Failed to read kernel.toml")?;
 
     // Parse TOML to extract notification settings
-    let parsed: toml::Value = toml::from_str(&contents)
-        .context("Failed to parse kernel.toml")?;
+    let parsed: toml::Value = toml::from_str(&contents).context("Failed to parse kernel.toml")?;
 
     let enabled = parsed
         .get("kernel")
@@ -860,10 +858,7 @@ fn load_notification_config() -> Result<NotificationConfig> {
         _ => NotificationLevel::Warning,
     };
 
-    Ok(NotificationConfig {
-        enabled,
-        min_level,
-    })
+    Ok(NotificationConfig { enabled, min_level })
 }
 
 // ============================================================================
@@ -880,7 +875,10 @@ fn handle_kernel_daemon(action: DaemonActions) -> Result<()> {
 }
 
 fn daemon_start(foreground: bool) -> Result<()> {
-    println!("{}", "🚀 Starting NABIKernel daemon...".bright_cyan().bold());
+    println!(
+        "{}",
+        "🚀 Starting NABIKernel daemon...".bright_cyan().bold()
+    );
     println!();
 
     // Pre-flight check: port conflict detection
@@ -949,7 +947,10 @@ fn daemon_start(foreground: bool) -> Result<()> {
 }
 
 fn daemon_stop() -> Result<()> {
-    println!("{}", "🛑 Stopping NABIKernel daemon...".bright_yellow().bold());
+    println!(
+        "{}",
+        "🛑 Stopping NABIKernel daemon...".bright_yellow().bold()
+    );
     println!();
 
     let daemon_script = NabiPaths::config_dir()
@@ -1038,7 +1039,10 @@ fn check_port_available(port: u16) -> Result<bool> {
     if output.status.success() && !output.stdout.is_empty() {
         // Port is in use
         let stdout = String::from_utf8_lossy(&output.stdout);
-        eprintln!("{}", format!("❌ Port {} is already in use", port).red().bold());
+        eprintln!(
+            "{}",
+            format!("❌ Port {} is already in use", port).red().bold()
+        );
         eprintln!();
         eprintln!("{}", stdout);
 
@@ -1102,9 +1106,7 @@ fn handle_kernel_status(detailed: bool) -> Result<()> {
     }
 
     // 2. Check port
-    let port_check = Command::new("lsof")
-        .args(&["-i", ":5380"])
-        .output();
+    let port_check = Command::new("lsof").args(&["-i", ":5380"]).output();
 
     match port_check {
         Ok(output) if output.status.success() && !output.stdout.is_empty() => {
@@ -1170,23 +1172,27 @@ fn handle_kernel_health(detailed: bool, format: Option<HealthOutputFormat>) -> R
     };
 
     // Check kernel daemon
-    health_status
-        .core_services
-        .push(check_service_health("NABIKernel API", "http://localhost:5380/health"));
+    health_status.core_services.push(check_service_health(
+        "NABIKernel API",
+        "http://localhost:5380/health",
+    ));
 
     // Check key federation services
-    health_status
-        .core_services
-        .push(check_service_health("SurrealDB", "http://localhost:8284/health"));
+    health_status.core_services.push(check_service_health(
+        "SurrealDB",
+        "http://localhost:8284/health",
+    ));
     health_status
         .core_services
         .push(check_service_health("Loki", "http://localhost:3100/ready"));
-    health_status
-        .core_services
-        .push(check_service_health("Grafana", "http://localhost:3002/api/health"));
-    health_status
-        .core_services
-        .push(check_service_health("Vigil", "http://localhost:8100/health"));
+    health_status.core_services.push(check_service_health(
+        "Grafana",
+        "http://localhost:3002/api/health",
+    ));
+    health_status.core_services.push(check_service_health(
+        "Vigil",
+        "http://localhost:8100/health",
+    ));
 
     // Calculate summary
     for service in &health_status.core_services {
@@ -1211,7 +1217,12 @@ fn handle_kernel_health(detailed: bool, format: Option<HealthOutputFormat>) -> R
 }
 
 fn print_health_dashboard(status: &HealthStatus, _detailed: bool) {
-    println!("{}", "NABIKernel Federation Health Dashboard".bright_cyan().bold());
+    println!(
+        "{}",
+        "NABIKernel Federation Health Dashboard"
+            .bright_cyan()
+            .bold()
+    );
     println!("{}", "━".repeat(60).bright_black());
     println!();
 

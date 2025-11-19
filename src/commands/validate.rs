@@ -136,7 +136,10 @@ fn scan_directory_for_transforms(dir: &Path, found_any: &mut bool) -> Result<()>
                 if let Ok(value) = toml::from_str::<toml::Value>(&content) {
                     if let Some(meta) = value.get("meta") {
                         if let Ok(route) = ImplementationRoute::from_toml_meta(meta) {
-                            let config_name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("unknown");
+                            let config_name = path
+                                .file_stem()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or("unknown");
 
                             println!(
                                 "{} {} {}",
