@@ -1,6 +1,5 @@
 /// Mode command handlers
 /// TODO: Extract mode handlers from main.rs
-
 use anyhow::Result;
 
 pub fn handle_mode(_mode: Option<String>) -> Result<()> {
