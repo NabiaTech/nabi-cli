@@ -28,7 +28,7 @@ use commands::events;
 use commands::kernel;
 use commands::port;
 use commands::tmux;
-use cli::{AuraCommands, BackupCommands};
+use cli::{AuraCommands, BackupCommands, ScanSourceType};
 use handlers::aura::handle_aura;
 use paths::NabiPaths;
 
@@ -143,9 +143,9 @@ enum Commands {
         /// Search documentation using ripgrep
         #[arg(long)]
         docs: bool,
-        /// Filter by file type(s) (comma-separated: md,txt,toml)
-        #[arg(long, value_delimiter = ',')]
-        type_filter: Option<Vec<String>>,
+        /// Filter by file type(s) (comma-separated extensions)
+        #[arg(long, value_delimiter = ',', value_enum)]
+        type_filter: Option<Vec<ScanSourceType>>,
         /// Search query for docs search
         #[arg(value_name = "QUERY", last = true)]
         query: Option<String>,
@@ -3021,7 +3021,7 @@ fn handle_scan(
     confidence: Option<f32>,
     all: bool,
     docs: bool,
-    type_filter: Option<Vec<String>>,
+    type_filter: Option<Vec<ScanSourceType>>,
     query: Option<String>,
 ) -> Result<()> {
     // If --all flag is set, run tree scan of federation directories
@@ -3031,8 +3031,9 @@ fn handle_scan(
 
     // If --docs flag is set, search documentation with ripgrep
     if docs {
+        let doc_filters = type_filter.clone();
         match query {
-            Some(q) => return handle_scan_docs(&q, type_filter),
+            Some(q) => return handle_scan_docs(&q, doc_filters),
             None => anyhow::bail!("--docs requires a search query (e.g., nabi scan --docs nats)"),
         }
     }
@@ -3052,8 +3053,13 @@ fn handle_scan(
 
     if let Some(types) = type_filter {
         if !types.is_empty() {
+            let joined = types
+                .iter()
+                .map(ScanSourceType::as_extension)
+                .collect::<Vec<&'static str>>()
+                .join(",");
             args.push("--type".to_string());
-            args.push(types.join(","));
+            args.push(joined);
         }
     }
 
@@ -3170,7 +3176,7 @@ fn handle_scan_all() -> Result<()> {
     Ok(())
 }
 
-fn handle_scan_docs(query: &str, type_filter: Option<Vec<String>>) -> Result<()> {
+fn handle_scan_docs(query: &str, type_filter: Option<Vec<ScanSourceType>>) -> Result<()> {
     println!(
         "{}",
         format!("📚 Searching docs for: '{}'", query).cyan().bold()
@@ -3200,7 +3206,8 @@ fn handle_scan_docs(query: &str, type_filter: Option<Vec<String>>) -> Result<()>
     // Apply type filtering if specified
     if let Some(types) = type_filter {
         for ext in types {
-            cmd.arg("--glob").arg(format!("*.{}", ext));
+            cmd.arg("--glob")
+                .arg(format!("*.{}", ext.as_extension()));
         }
     }
 

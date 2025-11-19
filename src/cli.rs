@@ -82,6 +82,11 @@ pub enum Commands {
         args: Vec<String>,
     },
     /// Filesystem scanning and metadata generation
+    ///
+    /// Examples:
+    ///   nabi scan --all                      # Scan all federation dirs (includes ~/docs)
+    ///   nabi scan --docs nats                # Search docs for 'nats'
+    ///   nabi scan --docs --type md jetstream # Search markdown for 'jetstream'
     Scan {
         /// Path to scan
         #[arg(value_name = "PATH")]
@@ -92,6 +97,18 @@ pub enum Commands {
         /// Confidence level (0-1)
         #[arg(long)]
         confidence: Option<f32>,
+        /// Scan all federation directories (quick tree overview)
+        #[arg(long)]
+        all: bool,
+        /// Search documentation using ripgrep
+        #[arg(long)]
+        docs: bool,
+        /// Filter by file type(s) (comma-separated extensions)
+        #[arg(long, value_delimiter = ',', value_enum)]
+        type_filter: Option<Vec<ScanSourceType>>,
+        /// Search query for docs search
+        #[arg(value_name = "QUERY", last = true)]
+        query: Option<String>,
     },
     /// File watching and real-time classification
     Watch {
@@ -225,6 +242,33 @@ pub enum Commands {
         #[command(subcommand)]
         command: MigrateCommands,
     },
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+#[value(rename_all = "kebab-case")]
+pub enum ScanSourceType {
+    #[value(name = "md", alias = "markdown", help = "Markdown files (*.md)")]
+    Markdown,
+    #[value(name = "txt", alias = "text", help = "Plain text files (*.txt)")]
+    Text,
+    #[value(name = "toml", help = "TOML files (*.toml)")]
+    Toml,
+    #[value(name = "json", help = "JSON files (*.json)")]
+    Json,
+    #[value(name = "yaml", alias = "yml", help = "YAML files (*.yaml, *.yml)")]
+    Yaml,
+}
+
+impl ScanSourceType {
+    pub fn as_extension(&self) -> &'static str {
+        match self {
+            ScanSourceType::Markdown => "md",
+            ScanSourceType::Text => "txt",
+            ScanSourceType::Toml => "toml",
+            ScanSourceType::Json => "json",
+            ScanSourceType::Yaml => "yaml",
+        }
+    }
 }
 
 #[derive(Subcommand)]
