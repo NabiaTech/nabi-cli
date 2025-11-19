@@ -1,12 +1,11 @@
+use serde::{Deserialize, Serialize};
 /// Unit Tests for `nabi events ack` Command
 ///
 /// Tests vector clock operations, causal ancestry computation, and JSONL atomicity.
 /// These tests use mocked Python bridge for isolation.
 ///
 /// Run with: cargo test --test events_ack_unit_tests -- --nocapture
-
 use std::collections::HashMap;
-use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::Write;
 use tempfile::TempDir;
@@ -67,29 +66,21 @@ impl VectorClock {
         }
 
         // Check if self <= other (all nodes in self <= other)
-        let self_le_other = all_nodes
-            .iter()
-            .all(|n| self.get(n) <= other.get(n));
+        let self_le_other = all_nodes.iter().all(|n| self.get(n) <= other.get(n));
         // Check if self < other (at least one node strictly less)
-        let self_lt_other = all_nodes
-            .iter()
-            .any(|n| self.get(n) < other.get(n));
+        let self_lt_other = all_nodes.iter().any(|n| self.get(n) < other.get(n));
         let self_precedes = self_le_other && self_lt_other;
 
         // Check if other <= self
-        let other_le_self = all_nodes
-            .iter()
-            .all(|n| other.get(n) <= self.get(n));
+        let other_le_self = all_nodes.iter().all(|n| other.get(n) <= self.get(n));
         // Check if other < self
-        let other_lt_self = all_nodes
-            .iter()
-            .any(|n| other.get(n) < self.get(n));
+        let other_lt_self = all_nodes.iter().any(|n| other.get(n) < self.get(n));
         let other_precedes = other_le_self && other_lt_self;
 
         match (self_precedes, other_precedes) {
-            (true, false) => Some(true),   // self < other
-            (false, true) => Some(false),  // other < self
-            _ => None,                     // concurrent or equal
+            (true, false) => Some(true),  // self < other
+            (false, true) => Some(false), // other < self
+            _ => None,                    // concurrent or equal
         }
     }
 }
@@ -285,10 +276,7 @@ mod causal_ancestry_tests {
     use super::*;
 
     /// Find all acknowledgments that causally precede the target
-    fn compute_causal_ancestors(
-        target: &VectorClock,
-        all_acks: &[Acknowledgment],
-    ) -> Vec<String> {
+    fn compute_causal_ancestors(target: &VectorClock, all_acks: &[Acknowledgment]) -> Vec<String> {
         all_acks
             .iter()
             .filter_map(|ack| {
@@ -473,8 +461,7 @@ mod jsonl_atomicity_tests {
         assert_eq!(lines.len(), 1);
 
         // Verify JSON is parseable
-        let parsed: Acknowledgment =
-            serde_json::from_str(lines[0]).expect("Failed to parse JSON");
+        let parsed: Acknowledgment = serde_json::from_str(lines[0]).expect("Failed to parse JSON");
         assert_eq!(parsed.ack_id, "ack-001");
     }
 

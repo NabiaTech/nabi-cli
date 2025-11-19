@@ -1,17 +1,16 @@
+use chrono::Utc;
+use serde::{Deserialize, Serialize};
 /// Integration Tests for `nabi events ack` Command
 ///
 /// Tests end-to-end acknowledgment workflow with real file operations.
 /// These tests use actual event files and JSONL logs.
 ///
 /// Run with: cargo test --test events_ack_integration_tests -- --nocapture --test-threads=1
-
 use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use serde::{Deserialize, Serialize};
 use tempfile::TempDir;
-use chrono::Utc;
 
 // ============================================================================
 // Test Fixtures and Helpers
@@ -93,7 +92,10 @@ impl TestEnvironment {
         let temp_dir = TempDir::new()?;
         let event_dir = temp_dir.path().join("events");
         fs::create_dir_all(&event_dir)?;
-        Ok(TestEnvironment { temp_dir, event_dir })
+        Ok(TestEnvironment {
+            temp_dir,
+            event_dir,
+        })
     }
 
     fn create_event(&self, event: &Event) -> std::io::Result<()> {
@@ -186,12 +188,7 @@ fn acknowledge_event(
         })
         .collect();
 
-    let ack_id = format!(
-        "ack-{}-{}-{}",
-        event_id,
-        node_id,
-        existing_acks.len() + 1
-    );
+    let ack_id = format!("ack-{}-{}-{}", event_id, node_id, existing_acks.len() + 1);
 
     Acknowledgment {
         ack_id,
@@ -247,8 +244,7 @@ mod integration_tests {
         event_vc.set("macos".to_string(), 10);
         let event = Event::new("test-event-001", "test-source", event_vc);
 
-        env.create_event(&event)
-            .expect("Failed to create event");
+        env.create_event(&event).expect("Failed to create event");
 
         // Verify event exists
         let read_event = env
@@ -279,8 +275,7 @@ mod integration_tests {
         let mut event_vc = VectorClock::new();
         event_vc.set("macos".to_string(), 5);
         let event = Event::new("test-event-002", "test-source", event_vc.clone());
-        env.create_event(&event)
-            .expect("Failed to create event");
+        env.create_event(&event).expect("Failed to create event");
 
         // First acknowledgment
         let ack1 = acknowledge_event("test-event-002", "macos", &event.vector_clock, &[]);
@@ -315,9 +310,9 @@ mod integration_tests {
             assert_eq!(ack.event_id, "test-event-002");
             // Each acknowledgment should have incremented its node's counter
             match idx {
-                0 => assert_eq!(ack.vector_clock.get("macos"), 6),  // macos: 5 -> 6
-                1 => assert_eq!(ack.vector_clock.get("rpi"), 1),    // rpi: 0 -> 1
-                2 => assert_eq!(ack.vector_clock.get("wsl"), 1),    // wsl: 0 -> 1
+                0 => assert_eq!(ack.vector_clock.get("macos"), 6), // macos: 5 -> 6
+                1 => assert_eq!(ack.vector_clock.get("rpi"), 1),   // rpi: 0 -> 1
+                2 => assert_eq!(ack.vector_clock.get("wsl"), 1),   // wsl: 0 -> 1
                 _ => unreachable!(),
             }
         }
@@ -332,8 +327,7 @@ mod integration_tests {
         event_vc.set("macos".to_string(), 5);
         event_vc.set("rpi".to_string(), 3);
         let event = Event::new("test-event-003", "test-source", event_vc.clone());
-        env.create_event(&event)
-            .expect("Failed to create event");
+        env.create_event(&event).expect("Failed to create event");
 
         // First acknowledgment from macos
         let ack1 = acknowledge_event("test-event-003", "macos", &event.vector_clock, &[]);
@@ -341,7 +335,12 @@ mod integration_tests {
             .expect("Failed to append ack1");
 
         // Concurrent acknowledgment from wsl (different node, no dependencies)
-        let ack2 = acknowledge_event("test-event-003", "wsl", &event.vector_clock, &[ack1.clone()]);
+        let ack2 = acknowledge_event(
+            "test-event-003",
+            "wsl",
+            &event.vector_clock,
+            &[ack1.clone()],
+        );
         // wsl's VC doesn't include macos values, so it shouldn't reference ack1 as causal ancestor
         env.append_ack("test-event-003", &ack2)
             .expect("Failed to append ack2");
@@ -361,8 +360,7 @@ mod integration_tests {
         let mut event_vc = VectorClock::new();
         event_vc.set("macos".to_string(), 1);
         let event = Event::new("test-event-004", "test-source", event_vc);
-        env.create_event(&event)
-            .expect("Failed to create event");
+        env.create_event(&event).expect("Failed to create event");
 
         // Acknowledge with metadata
         let mut ack = acknowledge_event("test-event-004", "macos", &event.vector_clock, &[]);
@@ -395,11 +393,7 @@ mod integration_tests {
         for i in 1..=3 {
             let mut event_vc = VectorClock::new();
             event_vc.set("macos".to_string(), i as u64);
-            let event = Event::new(
-                &format!("test-event-{:03}", i),
-                "test-source",
-                event_vc,
-            );
+            let event = Event::new(&format!("test-event-{:03}", i), "test-source", event_vc);
             env.create_event(&event)
                 .expect(&format!("Failed to create event {}", i));
         }
@@ -434,8 +428,7 @@ mod integration_tests {
         let mut event_vc = VectorClock::new();
         event_vc.set("macos".to_string(), 1);
         let event = Event::new("test-event-005", "test-source", event_vc);
-        env.create_event(&event)
-            .expect("Failed to create event");
+        env.create_event(&event).expect("Failed to create event");
 
         // Append multiple acks rapidly
         for i in 1..=5 {
@@ -485,8 +478,7 @@ mod integration_tests {
         // Create event with empty vector clock
         let event_vc = VectorClock::new();
         let event = Event::new("test-event-006", "test-source", event_vc);
-        env.create_event(&event)
-            .expect("Failed to create event");
+        env.create_event(&event).expect("Failed to create event");
 
         // Acknowledge event
         let ack = acknowledge_event("test-event-006", "macos", &event.vector_clock, &[]);

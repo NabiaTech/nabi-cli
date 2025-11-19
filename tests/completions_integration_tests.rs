@@ -2,7 +2,6 @@
 ///
 /// These tests verify that the full completion pipeline works end-to-end,
 /// including dynamic tool discovery and file operations.
-
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
@@ -21,17 +20,29 @@ fn get_nabi_binary() -> PathBuf {
 #[test]
 fn test_full_completion_pipeline_zsh() {
     let nabi_binary = get_nabi_binary();
-    assert!(nabi_binary.exists(), "Nabi binary should exist at {:?}", nabi_binary);
+    assert!(
+        nabi_binary.exists(),
+        "Nabi binary should exist at {:?}",
+        nabi_binary
+    );
 
     let temp_dir = TempDir::new().unwrap();
     let output_file = temp_dir.path().join("test_completion.zsh");
 
     let output = Command::new(&nabi_binary)
-        .args(&["completions", "zsh", "--output", &output_file.to_string_lossy()])
+        .args(&[
+            "completions",
+            "zsh",
+            "--output",
+            &output_file.to_string_lossy(),
+        ])
         .output()
         .expect("Failed to run nabi completions");
 
-    assert!(output.status.success(), "Completion generation should succeed");
+    assert!(
+        output.status.success(),
+        "Completion generation should succeed"
+    );
 
     // Verify the file was created
     assert!(output_file.exists(), "Output file should be created");
@@ -59,13 +70,22 @@ fn test_full_completion_pipeline_zsh() {
 #[test]
 fn test_full_completion_pipeline_bash() {
     let nabi_binary = get_nabi_binary();
-    assert!(nabi_binary.exists(), "Nabi binary should exist at {:?}", nabi_binary);
+    assert!(
+        nabi_binary.exists(),
+        "Nabi binary should exist at {:?}",
+        nabi_binary
+    );
 
     let temp_dir = TempDir::new().unwrap();
     let output_file = temp_dir.path().join("test_completion.bash");
 
     let output = Command::new(&nabi_binary)
-        .args(&["completions", "bash", "--output", &output_file.to_string_lossy()])
+        .args(&[
+            "completions",
+            "bash",
+            "--output",
+            &output_file.to_string_lossy(),
+        ])
         .output()
         .expect("Failed to run nabi completions");
 
@@ -88,14 +108,21 @@ fn test_full_completion_pipeline_bash() {
 #[test]
 fn test_completion_to_stdout() {
     let nabi_binary = get_nabi_binary();
-    assert!(nabi_binary.exists(), "Nabi binary should exist at {:?}", nabi_binary);
+    assert!(
+        nabi_binary.exists(),
+        "Nabi binary should exist at {:?}",
+        nabi_binary
+    );
 
     let output = Command::new(&nabi_binary)
         .args(&["completions", "zsh"])
         .output()
         .expect("Failed to run nabi completions");
 
-    assert!(output.status.success(), "Completion generation to stdout should succeed");
+    assert!(
+        output.status.success(),
+        "Completion generation to stdout should succeed"
+    );
 
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(!stdout.is_empty());
@@ -106,7 +133,11 @@ fn test_completion_to_stdout() {
 #[test]
 fn test_completion_file_sizes() {
     let nabi_binary = get_nabi_binary();
-    assert!(nabi_binary.exists(), "Nabi binary should exist at {:?}", nabi_binary);
+    assert!(
+        nabi_binary.exists(),
+        "Nabi binary should exist at {:?}",
+        nabi_binary
+    );
 
     let temp_dir = TempDir::new().unwrap();
 
@@ -116,7 +147,12 @@ fn test_completion_file_sizes() {
         let output_file = temp_dir.path().join(format!("completion_{}.txt", shell));
 
         let output = Command::new(&nabi_binary)
-            .args(&["completions", shell, "--output", &output_file.to_string_lossy()])
+            .args(&[
+                "completions",
+                shell,
+                "--output",
+                &output_file.to_string_lossy(),
+            ])
             .output()
             .expect("Failed to run nabi completions");
 
@@ -136,13 +172,22 @@ fn test_completion_file_sizes() {
 #[test]
 fn test_dynamic_completion_content() {
     let nabi_binary = get_nabi_binary();
-    assert!(nabi_binary.exists(), "Nabi binary should exist at {:?}", nabi_binary);
+    assert!(
+        nabi_binary.exists(),
+        "Nabi binary should exist at {:?}",
+        nabi_binary
+    );
 
     let temp_dir = TempDir::new().unwrap();
     let output_file = temp_dir.path().join("zsh_completion");
 
     let output = Command::new(&nabi_binary)
-        .args(&["completions", "zsh", "--output", &output_file.to_string_lossy()])
+        .args(&[
+            "completions",
+            "zsh",
+            "--output",
+            &output_file.to_string_lossy(),
+        ])
         .output()
         .expect("Failed to run nabi completions");
 
@@ -163,13 +208,22 @@ fn test_dynamic_completion_content() {
 #[test]
 fn test_bash_dynamic_completion_content() {
     let nabi_binary = get_nabi_binary();
-    assert!(nabi_binary.exists(), "Nabi binary should exist at {:?}", nabi_binary);
+    assert!(
+        nabi_binary.exists(),
+        "Nabi binary should exist at {:?}",
+        nabi_binary
+    );
 
     let temp_dir = TempDir::new().unwrap();
     let output_file = temp_dir.path().join("bash_completion");
 
     let output = Command::new(&nabi_binary)
-        .args(&["completions", "bash", "--output", &output_file.to_string_lossy()])
+        .args(&[
+            "completions",
+            "bash",
+            "--output",
+            &output_file.to_string_lossy(),
+        ])
         .output()
         .expect("Failed to run nabi completions");
 
@@ -188,13 +242,22 @@ fn test_bash_dynamic_completion_content() {
 #[test]
 fn test_completion_subcommand_coverage() {
     let nabi_binary = get_nabi_binary();
-    assert!(nabi_binary.exists(), "Nabi binary should exist at {:?}", nabi_binary);
+    assert!(
+        nabi_binary.exists(),
+        "Nabi binary should exist at {:?}",
+        nabi_binary
+    );
 
     let temp_dir = TempDir::new().unwrap();
     let output_file = temp_dir.path().join("completion");
 
     let output = Command::new(&nabi_binary)
-        .args(&["completions", "zsh", "--output", &output_file.to_string_lossy()])
+        .args(&[
+            "completions",
+            "zsh",
+            "--output",
+            &output_file.to_string_lossy(),
+        ])
         .output()
         .expect("Failed to run nabi completions");
 
@@ -214,8 +277,11 @@ fn test_completion_subcommand_coverage() {
     ];
 
     for pattern in expected_patterns {
-        assert!(content.contains(pattern),
-                "Completion should include subcommand: {}", pattern);
+        assert!(
+            content.contains(pattern),
+            "Completion should include subcommand: {}",
+            pattern
+        );
     }
 }
 
@@ -223,7 +289,11 @@ fn test_completion_subcommand_coverage() {
 #[test]
 fn test_invalid_shell_handling() {
     let nabi_binary = get_nabi_binary();
-    assert!(nabi_binary.exists(), "Nabi binary should exist at {:?}", nabi_binary);
+    assert!(
+        nabi_binary.exists(),
+        "Nabi binary should exist at {:?}",
+        nabi_binary
+    );
 
     let output = Command::new(&nabi_binary)
         .args(&["completions", "invalid_shell"])
