@@ -346,6 +346,44 @@ PANE FORMAT:
         #[arg(long, default_value = "text")]
         format: String,
     },
+
+    /// Move a contiguous range of windows between sessions using stable window IDs
+    ///
+    /// Enables deterministic migration of tmux windows where order matters by
+    /// capturing window IDs before issuing `move-window` commands. Designed for
+    /// workflows that need to relocate tabs without disturbing layout.
+    #[command(
+        after_help = "EXAMPLES:\n  # Move windows 10-12 from 'main' to 'events'\n  nabi tmux transfer-range --source-session main --target-session events --start-index 10 --end-index 12\n\n  # Dry run with JSON output (no changes)\n  nabi tmux transfer-range --source-session main --target-session events --start-index 5 --end-index 8 --dry-run --format json\n\n  # Move a single window (index 4)\n  nabi tmux transfer-range --source-session alpha --target-session beta --start-index 4"
+    )]
+    TransferRange {
+        /// Session to take windows from
+        #[arg(long, value_name = "SESSION")]
+        source_session: String,
+
+        /// Session to append windows to (must already exist)
+        #[arg(long, value_name = "SESSION")]
+        target_session: String,
+
+        /// Starting window index (inclusive)
+        #[arg(long, value_name = "INDEX")]
+        start_index: u32,
+
+        /// Ending window index (inclusive). Defaults to start index
+        #[arg(long, value_name = "INDEX")]
+        end_index: Option<u32>,
+
+        /// Output format: text (default) or json
+        #[arg(long, default_value = "text")]
+        format: String,
+
+        /// Plan only, do not execute move-window commands
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Skip verification list queries after move
+        #[arg(long = "no-verify")]
+        no_verify: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -749,6 +787,23 @@ pub fn handle_tmux_commands(cmd: TmuxCommands) -> Result<()> {
             command,
             format,
         } => handle_split_pane(&pane, &direction, size, command, &format),
+        TmuxCommands::TransferRange {
+            source_session,
+            target_session,
+            start_index,
+            end_index,
+            format,
+            dry_run,
+            no_verify,
+        } => handle_transfer_window_range(
+            &source_session,
+            &target_session,
+            start_index,
+            end_index,
+            &format,
+            dry_run,
+            !no_verify,
+        ),
     }
 }
 
@@ -1688,6 +1743,333 @@ fn list_tmux_windows(session: &str, format: &str, no_strict: bool) -> Result<()>
     }
 
     Ok(())
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct WindowTransferPlanEntry {
+    index: u32,
+    window_id: String,
+    name: String,
+    pane_count: u32,
+}
+
+#[derive(Debug, Serialize)]
+struct WindowTransferOutcome {
+    original_index: u32,
+    window_id: String,
+    window_name: String,
+    pane_count: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    result_index: Option<u32>,
+}
+
+#[derive(Debug, Serialize)]
+struct WindowTransferSummary {
+    source_session: String,
+    target_session: String,
+    start_index: u32,
+    end_index: u32,
+    moved_windows: Vec<WindowTransferOutcome>,
+    source_remaining: usize,
+    target_total: usize,
+    dry_run: bool,
+    verified: bool,
+}
+
+fn handle_transfer_window_range(
+    source_session: &str,
+    target_session: &str,
+    start_index: u32,
+    end_index: Option<u32>,
+    format: &str,
+    dry_run: bool,
+    verify: bool,
+) -> Result<()> {
+    if source_session == target_session {
+        anyhow::bail!("source and target sessions must be different");
+    }
+
+    if start_index == 0 {
+        anyhow::bail!("start-index must be >= 1");
+    }
+
+    let resolved_end = end_index.unwrap_or(start_index);
+    if resolved_end < start_index {
+        anyhow::bail!("end-index must be >= start-index");
+    }
+
+    ensure_tmux_session_exists(source_session)
+        .with_context(|| format!("Source session '{}' not found", source_session))?;
+    ensure_tmux_session_exists(target_session)
+        .with_context(|| format!("Target session '{}' not found", target_session))?;
+
+    let source_windows = query_window_transfer_entries(source_session)?;
+    if source_windows.is_empty() {
+        anyhow::bail!("No windows found in source session '{}'.", source_session);
+    }
+
+    let target_windows_before = query_window_transfer_entries(target_session)?;
+
+    let plan_range: Vec<WindowTransferPlanEntry> = source_windows
+        .iter()
+        .filter(|w| w.index >= start_index && w.index <= resolved_end)
+        .cloned()
+        .collect();
+
+    let expected_count = (resolved_end - start_index + 1) as usize;
+    if plan_range.is_empty() {
+        anyhow::bail!(
+            "No windows in session '{}' matched indexes {}-{}",
+            source_session,
+            start_index,
+            resolved_end
+        );
+    }
+
+    let mut missing: Vec<u32> = Vec::new();
+    if plan_range.len() != expected_count {
+        for idx in start_index..=resolved_end {
+            if !plan_range.iter().any(|w| w.index == idx) {
+                missing.push(idx);
+            }
+        }
+    }
+
+    if !missing.is_empty() {
+        let missing_str = missing
+            .iter()
+            .map(|i| i.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        anyhow::bail!(
+            "Missing windows in session '{}': indices {}",
+            source_session,
+            missing_str
+        );
+    }
+
+    let mut moved_windows: Vec<WindowTransferOutcome> = plan_range
+        .iter()
+        .map(|w| WindowTransferOutcome {
+            original_index: w.index,
+            window_id: w.window_id.clone(),
+            window_name: w.name.clone(),
+            pane_count: w.pane_count,
+            result_index: None,
+        })
+        .collect();
+
+    if dry_run {
+        let summary = WindowTransferSummary {
+            source_session: source_session.to_string(),
+            target_session: target_session.to_string(),
+            start_index,
+            end_index: resolved_end,
+            moved_windows,
+            source_remaining: source_windows.len().saturating_sub(expected_count),
+            target_total: target_windows_before.len() + expected_count,
+            dry_run: true,
+            verified: false,
+        };
+        return output_transfer_summary(&summary, format);
+    }
+
+    for entry in &plan_range {
+        move_window_to_session(&entry.window_id, target_session).with_context(|| {
+            format!(
+                "Failed to move window '{}' (index {}) to session '{}'",
+                entry.window_id, entry.index, target_session
+            )
+        })?;
+    }
+
+    let source_after = query_window_transfer_entries(source_session)?;
+    let target_after = query_window_transfer_entries(target_session)?;
+
+    if verify {
+        let mut lookup: HashMap<String, u32> = HashMap::new();
+        for win in &target_after {
+            lookup.insert(win.window_id.clone(), win.index);
+        }
+
+        for moved in &mut moved_windows {
+            if let Some(idx) = lookup.get(&moved.window_id) {
+                moved.result_index = Some(*idx);
+            }
+        }
+    }
+
+    let summary = WindowTransferSummary {
+        source_session: source_session.to_string(),
+        target_session: target_session.to_string(),
+        start_index,
+        end_index: resolved_end,
+        moved_windows,
+        source_remaining: source_after.len(),
+        target_total: target_after.len(),
+        dry_run: false,
+        verified: verify,
+    };
+
+    output_transfer_summary(&summary, format)
+}
+
+fn ensure_tmux_session_exists(session: &str) -> Result<()> {
+    let status = Command::new("tmux")
+        .args(&["has-session", "-t", session])
+        .status()
+        .with_context(|| format!("Failed to query tmux session '{}'", session))?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        anyhow::bail!("tmux session '{}' does not exist", session);
+    }
+}
+
+fn query_window_transfer_entries(session: &str) -> Result<Vec<WindowTransferPlanEntry>> {
+    let output = Command::new("tmux")
+        .args(&[
+            "list-windows",
+            "-t",
+            session,
+            "-F",
+            "#{window_index}|#{window_id}|#{window_name}|#{window_panes}",
+        ])
+        .output()
+        .with_context(|| format!("Failed to list windows for session '{}'", session))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!(
+            "tmux list-windows for session '{}' failed: {}",
+            session,
+            stderr.trim()
+        );
+    }
+
+    let stdout = String::from_utf8(output.stdout)?;
+    let mut windows: Vec<WindowTransferPlanEntry> = Vec::new();
+
+    for line in stdout.lines() {
+        let entry = line.trim();
+        if entry.is_empty() {
+            continue;
+        }
+
+        let parts: Vec<&str> = entry.split('|').collect();
+        if parts.len() < 4 {
+            continue;
+        }
+
+        let index = parts[0].trim().parse::<u32>().unwrap_or(0);
+        let window_id = parts[1].trim().to_string();
+        let name = parts[2].trim().to_string();
+        let pane_count = parts[3].trim().parse::<u32>().unwrap_or(1);
+
+        windows.push(WindowTransferPlanEntry {
+            index,
+            window_id,
+            name,
+            pane_count,
+        });
+    }
+
+    windows.sort_by(|a, b| a.index.cmp(&b.index));
+    Ok(windows)
+}
+
+fn move_window_to_session(window_id: &str, target_session: &str) -> Result<()> {
+    let target_spec = format!("{}:", target_session);
+    let output = Command::new("tmux")
+        .args(&["move-window", "-s", window_id, "-t", &target_spec])
+        .output()
+        .with_context(|| format!("Failed to execute move-window for '{}'", window_id))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!(
+            "tmux move-window for '{}' failed: {}",
+            window_id,
+            stderr.trim()
+        );
+    }
+}
+
+fn output_transfer_summary(summary: &WindowTransferSummary, format: &str) -> Result<()> {
+    match format {
+        "json" => {
+            let payload = serde_json::to_string_pretty(summary)
+                .context("Failed to serialize transfer summary")?;
+            println!("{}", payload);
+        }
+        _ => print_transfer_summary(summary),
+    }
+
+    Ok(())
+}
+
+fn print_transfer_summary(summary: &WindowTransferSummary) {
+    if summary.dry_run {
+        println!(
+            "Planning move of windows {}-{} from '{}' to '{}':",
+            summary.start_index, summary.end_index, summary.source_session, summary.target_session
+        );
+    } else {
+        println!(
+            "Moved windows {}-{} from '{}' to '{}':",
+            summary.start_index, summary.end_index, summary.source_session, summary.target_session
+        );
+    }
+
+    for window in &summary.moved_windows {
+        if summary.dry_run {
+            println!(
+                "  - #{} '{}' ({} panes) → would append to '{}'",
+                window.original_index,
+                window.window_name,
+                window.pane_count,
+                summary.target_session
+            );
+        } else if let Some(idx) = window.result_index {
+            println!(
+                "  - #{} '{}' ({} panes) → {}:{}",
+                window.original_index,
+                window.window_name,
+                window.pane_count,
+                summary.target_session,
+                idx
+            );
+        } else {
+            println!(
+                "  - #{} '{}' ({} panes) moved",
+                window.original_index, window.window_name, window.pane_count
+            );
+        }
+    }
+
+    if summary.dry_run {
+        println!(
+            "Post-move counts (predicted): '{}' => {}, '{}' => {}",
+            summary.source_session,
+            summary.source_remaining,
+            summary.target_session,
+            summary.target_total
+        );
+    } else {
+        println!(
+            "Post-move counts: '{}' => {}, '{}' => {}",
+            summary.source_session,
+            summary.source_remaining,
+            summary.target_session,
+            summary.target_total
+        );
+        if !summary.verified {
+            println!("(verification skipped)");
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]

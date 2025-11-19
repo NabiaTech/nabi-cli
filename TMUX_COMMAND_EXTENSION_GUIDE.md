@@ -225,6 +225,14 @@ if !output.status.success() {
 
 **Key learning**: Process tree walking, threshold logic
 
+### TransferRange (Lines ~1586-1900)
+
+**Purpose**: Deterministically move a contiguous window range between sessions
+
+**Complexity**: Medium (window ID snapshot, validation, optional verification)
+
+**Key learning**: Stable window IDs, `move-window` orchestration, JSON summaries for automation
+
 ---
 
 ## Candidate Commands (Ranked by Difficulty)
