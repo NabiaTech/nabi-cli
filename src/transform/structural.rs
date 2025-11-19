@@ -7,8 +7,10 @@
 //! - XDG-compliant path expansion
 
 use crate::transform::error::TransformResult;
-use crate::transform::{add_generated_metadata, expand_path, ensure_parent_dir, TransformError, TransformMeta};
 use crate::transform::schema::validate_against_schemas;
+use crate::transform::{
+    add_generated_metadata, ensure_parent_dir, expand_path, TransformError, TransformMeta,
+};
 use serde_json::{json, to_string_pretty, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -65,7 +67,10 @@ impl StructuralConfig {
         let meta = TransformMeta {
             transformation_type: crate::transform::TransformationType::Structural,
             template: None,
-            output_path: meta_table.get("output_path").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            output_path: meta_table
+                .get("output_path")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
             validators: meta_table
                 .get("validators")
                 .and_then(|v| v.as_array())
@@ -130,24 +135,24 @@ impl StructuralConfig {
         self.validate()?;
 
         // Get output path
-        let output_path_str = self
-            .meta
-            .output_path
-            .as_ref()
-            .ok_or(TransformError::MissingOutputPath {
-                file: self.source_path.display().to_string(),
-            })?;
+        let output_path_str =
+            self.meta
+                .output_path
+                .as_ref()
+                .ok_or(TransformError::MissingOutputPath {
+                    file: self.source_path.display().to_string(),
+                })?;
 
-        let output_path = expand_path(output_path_str).map_err(|e| {
-            TransformError::PathExpansionError {
+        let output_path =
+            expand_path(output_path_str).map_err(|e| TransformError::PathExpansionError {
                 original: output_path_str.clone(),
                 reason: e.to_string(),
-            }
-        })?;
+            })?;
 
         // Create parent directory
-        ensure_parent_dir(&output_path)
-            .map_err(|e| TransformError::Internal { message: e.to_string() })?;
+        ensure_parent_dir(&output_path).map_err(|e| TransformError::Internal {
+            message: e.to_string(),
+        })?;
 
         // Convert TOML to JSON
         let mut json_value = serde_json::to_value(&self.data)

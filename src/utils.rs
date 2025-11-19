@@ -1,7 +1,6 @@
 /// Utility functions used across the CLI
 ///
 /// Common helper functions for path manipulation, string formatting, etc.
-
 use std::path::Path;
 
 /// Convert a name to a URL-friendly slug
@@ -25,9 +24,12 @@ pub fn slugify(name: &str) -> String {
 /// Shell-quote a path for safe use in shell commands
 pub fn shell_quote(path: &Path) -> String {
     let raw = path.to_string_lossy();
-    let needs_quotes = raw
-        .chars()
-        .any(|c| matches!(c, ' ' | '"' | '\'' | '(' | ')' | '$' | '`' | '!' | '&' | ';' | '<' | '>' | '|'));
+    let needs_quotes = raw.chars().any(|c| {
+        matches!(
+            c,
+            ' ' | '"' | '\'' | '(' | ')' | '$' | '`' | '!' | '&' | ';' | '<' | '>' | '|'
+        )
+    });
     if !needs_quotes {
         raw.to_string()
     } else {

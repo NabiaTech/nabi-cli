@@ -7,10 +7,10 @@
 //!
 //! All transformations respect XDG directory structure and support `~/` path expansion.
 
+pub mod error;
+pub mod generative;
 pub mod schema;
 pub mod structural;
-pub mod generative;
-pub mod error;
 
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -53,8 +53,7 @@ pub enum TransformationType {
 /// Respects environment variables like `$HOME`, `$XDG_CONFIG_HOME`, etc.
 pub fn expand_path(path: &str) -> Result<PathBuf> {
     if path.starts_with("~/") {
-        let home = std::env::var("HOME")
-            .context("Failed to get HOME environment variable")?;
+        let home = std::env::var("HOME").context("Failed to get HOME environment variable")?;
         Ok(PathBuf::from(path.replace("~", &home)))
     } else if path.starts_with("$") {
         // Handle $VAR expansion
@@ -94,7 +93,11 @@ pub fn ensure_parent_dir(path: &Path) -> Result<()> {
 }
 
 /// Adds metadata timestamp to JSON output
-pub fn add_generated_metadata(json: &mut serde_json::Value, source_file: &str, schema_version: &str) {
+pub fn add_generated_metadata(
+    json: &mut serde_json::Value,
+    source_file: &str,
+    schema_version: &str,
+) {
     if let Some(obj) = json.as_object_mut() {
         obj.insert(
             "_meta".to_string(),

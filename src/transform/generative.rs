@@ -10,7 +10,7 @@
 //! Uses Handlebars (Rust-native Jinja2 alternative) for template rendering.
 
 use crate::transform::error::TransformResult;
-use crate::transform::{expand_path, ensure_parent_dir, TransformError, TransformMeta};
+use crate::transform::{ensure_parent_dir, expand_path, TransformError, TransformMeta};
 use handlebars::{Context, Handlebars, TemplateError};
 use serde_json::{json, Value};
 use std::fs;
@@ -131,12 +131,11 @@ impl GenerativeConfig {
                 file: self.source_path.display().to_string(),
             })?;
 
-        let expanded_path = expand_path(template_path).map_err(|e| {
-            TransformError::PathExpansionError {
+        let expanded_path =
+            expand_path(template_path).map_err(|e| TransformError::PathExpansionError {
                 original: template_path.clone(),
                 reason: e.to_string(),
-            }
-        })?;
+            })?;
 
         if !expanded_path.exists() {
             return Err(TransformError::TemplateReadError {
@@ -166,24 +165,24 @@ impl GenerativeConfig {
         let template_content = self.load_template()?;
 
         // Get output path
-        let output_path_str = self
-            .meta
-            .output_path
-            .as_ref()
-            .ok_or(TransformError::MissingOutputPath {
-                file: self.source_path.display().to_string(),
-            })?;
+        let output_path_str =
+            self.meta
+                .output_path
+                .as_ref()
+                .ok_or(TransformError::MissingOutputPath {
+                    file: self.source_path.display().to_string(),
+                })?;
 
-        let output_path = expand_path(output_path_str).map_err(|e| {
-            TransformError::PathExpansionError {
+        let output_path =
+            expand_path(output_path_str).map_err(|e| TransformError::PathExpansionError {
                 original: output_path_str.clone(),
                 reason: e.to_string(),
-            }
-        })?;
+            })?;
 
         // Create parent directory
-        ensure_parent_dir(&output_path)
-            .map_err(|e| TransformError::Internal { message: e.to_string() })?;
+        ensure_parent_dir(&output_path).map_err(|e| TransformError::Internal {
+            message: e.to_string(),
+        })?;
 
         // Convert TOML data to JSON for template rendering
         let data_json = serde_json::to_value(&self.data)
@@ -196,26 +195,16 @@ impl GenerativeConfig {
         handlebars
             .register_template_string("generative", &template_content)
             .map_err(|e: TemplateError| TransformError::TemplateRenderError {
-                template: self
-                    .meta
-                    .template
-                    .as_ref()
-                    .cloned()
-                    .unwrap_or_default(),
+                template: self.meta.template.as_ref().cloned().unwrap_or_default(),
                 reason: e.to_string(),
             })?;
 
-        let rendered = handlebars
-            .render("generative", &data_json)
-            .map_err(|e| TransformError::TemplateRenderError {
-                template: self
-                    .meta
-                    .template
-                    .as_ref()
-                    .cloned()
-                    .unwrap_or_default(),
+        let rendered = handlebars.render("generative", &data_json).map_err(|e| {
+            TransformError::TemplateRenderError {
+                template: self.meta.template.as_ref().cloned().unwrap_or_default(),
                 reason: e.to_string(),
-            })?;
+            }
+        })?;
 
         // Write to file
         fs::write(&output_path, &rendered).map_err(|e| TransformError::WriteError {

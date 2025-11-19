@@ -3,8 +3,8 @@
 //! Validates TOML structures against JSON schemas before transformation,
 //! providing detailed error messages with validation context.
 
-use crate::transform::error::{TransformError, TransformResult};
 use crate::paths::NabiPaths;
+use crate::transform::error::{TransformError, TransformResult};
 use jsonschema::JSONSchema;
 use serde_json::{from_str as json_from_str, json, Value};
 use std::fs;
@@ -12,37 +12,37 @@ use std::path::{Path, PathBuf};
 
 /// Loads a JSON schema from the governance/schemas directory
 fn load_schema(schema_name: &str) -> TransformResult<JSONSchema> {
-    let config_dir = NabiPaths::config_dir()
-        .map_err(|e| TransformError::Internal { message: e.to_string() })?;
-    let schema_path = config_dir.join("governance").join("schemas").join(schema_name);
+    let config_dir = NabiPaths::config_dir().map_err(|e| TransformError::Internal {
+        message: e.to_string(),
+    })?;
+    let schema_path = config_dir
+        .join("governance")
+        .join("schemas")
+        .join(schema_name);
 
     if !schema_path.exists() {
         return Err(TransformError::SchemaReadError {
             path: schema_path.clone(),
-            source: std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "Schema file not found",
-            ),
+            source: std::io::Error::new(std::io::ErrorKind::NotFound, "Schema file not found"),
         });
     }
 
-    let schema_content = fs::read_to_string(&schema_path)
-        .map_err(|e| TransformError::SchemaReadError {
+    let schema_content =
+        fs::read_to_string(&schema_path).map_err(|e| TransformError::SchemaReadError {
             path: schema_path.clone(),
             source: e,
         })?;
 
-    let schema_json: Value = json_from_str(&schema_content)
-        .map_err(|e| TransformError::SchemaParseError {
+    let schema_json: Value =
+        json_from_str(&schema_content).map_err(|e| TransformError::SchemaParseError {
             path: schema_path.clone(),
             source: e,
         })?;
 
-    JSONSchema::compile(&schema_json)
-        .map_err(|e| TransformError::SchemaValidationFailed {
-            file: schema_name.to_string(),
-            reason: format!("Failed to compile schema: {}", e),
-        })
+    JSONSchema::compile(&schema_json).map_err(|e| TransformError::SchemaValidationFailed {
+        file: schema_name.to_string(),
+        reason: format!("Failed to compile schema: {}", e),
+    })
 }
 
 /// Validates a TOML value against one or more JSON schemas
@@ -72,23 +72,14 @@ pub fn validate_against_schemas(
     for schema_name in schema_names {
         let schema = load_schema(schema_name)?;
 
-        schema
-            .validate(toml_value)
-            .map_err(|e| {
-                let errors: Vec<String> = e
-                    .into_iter()
-                    .map(|err| format!("  - {}", err))
-                    .collect();
+        schema.validate(toml_value).map_err(|e| {
+            let errors: Vec<String> = e.into_iter().map(|err| format!("  - {}", err)).collect();
 
-                TransformError::SchemaValidationFailed {
-                    file: file_name.to_string(),
-                    reason: format!(
-                        "Invalid against {}\n{}",
-                        schema_name,
-                        errors.join("\n")
-                    ),
-                }
-            })?;
+            TransformError::SchemaValidationFailed {
+                file: file_name.to_string(),
+                reason: format!("Invalid against {}\n{}", schema_name, errors.join("\n")),
+            }
+        })?;
     }
 
     Ok(())
@@ -102,10 +93,12 @@ pub fn validate_metadata(toml_value: &Value, file_path: &Path) -> TransformResul
         .unwrap_or("<unknown>");
 
     // Check for [meta] section
-    let meta = toml_value.get("meta").ok_or(TransformError::MissingMetadata {
-        field: "meta (section)".to_string(),
-        file: file_name.to_string(),
-    })?;
+    let meta = toml_value
+        .get("meta")
+        .ok_or(TransformError::MissingMetadata {
+            field: "meta (section)".to_string(),
+            file: file_name.to_string(),
+        })?;
 
     // Check for transformation_type
     let _trans_type = meta

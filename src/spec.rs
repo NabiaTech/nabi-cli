@@ -1,12 +1,11 @@
+use crate::cli::{Cli, SpecFormat};
 /// CLI specification generation
 ///
 /// Generates command specifications in various formats (markdown, JSON)
-
 use anyhow::Result;
 use clap::{Arg, Command, CommandFactory};
 use serde::Serialize;
 use std::io;
-use crate::cli::{Cli, SpecFormat};
 
 #[derive(Serialize)]
 pub struct SpecEntry {

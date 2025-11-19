@@ -85,7 +85,10 @@ pub enum TransformError {
     PathExpansionError { original: String, reason: String },
 
     #[error("Invalid category '{category}'. Valid categories: {valid:?}")]
-    InvalidCategory { category: String, valid: Vec<String> },
+    InvalidCategory {
+        category: String,
+        valid: Vec<String>,
+    },
 
     #[error("No TOML files found in {directory}")]
     NoFilesFound { directory: String },
