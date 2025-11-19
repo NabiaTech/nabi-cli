@@ -64,10 +64,7 @@ pub fn analyze(repo_path: &str, language: Option<&str>, force: bool, format: &st
     let index = if index_exists && !force {
         // Reuse existing index
         println!("{}", "Phase 1: Loading Cached Index".bold().cyan());
-        println!(
-            "{}",
-            format!("  → Language: {}", detected_lang).cyan()
-        );
+        println!("{}", format!("  → Language: {}", detected_lang).cyan());
         let cached_index = codegraph::load_index(repo_path, &detected_lang)?;
         println!(
             "{}",

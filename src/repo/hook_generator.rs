@@ -35,11 +35,11 @@ pub struct HookTemplate {
 impl HookDeployment {
     /// Load hook deployment configuration from codegraph.toml
     pub fn from_toml(toml_path: &Path) -> Result<Self> {
-        let toml_content = fs::read_to_string(toml_path)
-            .context("Failed to read codegraph.toml")?;
+        let toml_content =
+            fs::read_to_string(toml_path).context("Failed to read codegraph.toml")?;
 
-        let config: toml::Value = toml::from_str(&toml_content)
-            .context("Failed to parse codegraph.toml")?;
+        let config: toml::Value =
+            toml::from_str(&toml_content).context("Failed to parse codegraph.toml")?;
 
         // Resolve template directory
         let template_dir = {
@@ -54,7 +54,10 @@ impl HookDeployment {
         };
 
         if !template_dir.exists() {
-            return Err(anyhow!("Template directory not found: {}", template_dir.display()));
+            return Err(anyhow!(
+                "Template directory not found: {}",
+                template_dir.display()
+            ));
         }
 
         // Resolve output directory
@@ -140,8 +143,7 @@ impl HookDeployment {
         let mut stats = DeploymentStats::default();
 
         // Ensure output directory exists
-        fs::create_dir_all(&self.output_dir)
-            .context("Failed to create hooks output directory")?;
+        fs::create_dir_all(&self.output_dir).context("Failed to create hooks output directory")?;
 
         // Render each hook
         for hook in &self.hooks {
@@ -159,7 +161,10 @@ impl HookDeployment {
 
             // Register template
             hb.register_template_file(&hook.name, &template_path)
-                .context(format!("Failed to register template: {}", hook.template_file))?;
+                .context(format!(
+                    "Failed to register template: {}",
+                    hook.template_file
+                ))?;
 
             // Prepare variables with default values
             let mut variables = match hook.variables.as_object() {
@@ -176,10 +181,7 @@ impl HookDeployment {
             };
 
             // Add generated_at timestamp
-            variables.insert(
-                "generated_at".to_string(),
-                json!(Utc::now().to_rfc3339()),
-            );
+            variables.insert("generated_at".to_string(), json!(Utc::now().to_rfc3339()));
 
             let data = serde_json::Value::Object(variables);
 
@@ -195,8 +197,10 @@ impl HookDeployment {
 
             // Make executable (chmod +x)
             let permissions = fs::Permissions::from_mode(0o755);
-            fs::set_permissions(&output_path, permissions)
-                .context(format!("Failed to set permissions: {}", output_path.display()))?;
+            fs::set_permissions(&output_path, permissions).context(format!(
+                "Failed to set permissions: {}",
+                output_path.display()
+            ))?;
 
             if verbose {
                 println!("✓ Deployed {}: {}", hook.name, output_path.display());
@@ -226,9 +230,7 @@ impl DeploymentStats {
 fn toml_to_json(toml_value: &toml::Value) -> Result<JsonValue> {
     match toml_value {
         toml::Value::String(s) => Ok(JsonValue::String(s.clone())),
-        toml::Value::Integer(i) => Ok(JsonValue::Number(
-            serde_json::Number::from(*i)
-        )),
+        toml::Value::Integer(i) => Ok(JsonValue::Number(serde_json::Number::from(*i))),
         toml::Value::Float(f) => {
             if let Some(n) = serde_json::Number::from_f64(*f) {
                 Ok(JsonValue::Number(n))
@@ -238,10 +240,7 @@ fn toml_to_json(toml_value: &toml::Value) -> Result<JsonValue> {
         }
         toml::Value::Boolean(b) => Ok(JsonValue::Bool(*b)),
         toml::Value::Array(arr) => {
-            let json_arr: Result<Vec<JsonValue>> = arr
-                .iter()
-                .map(toml_to_json)
-                .collect();
+            let json_arr: Result<Vec<JsonValue>> = arr.iter().map(toml_to_json).collect();
             Ok(JsonValue::Array(json_arr?))
         }
         toml::Value::Table(tbl) => {
@@ -276,13 +275,13 @@ fn expand_tilde(path: &str) -> PathBuf {
         let home_str = home.to_string_lossy();
 
         // ${XDG_DATA_HOME} → ~/.local/share or $XDG_DATA_HOME
-        let xdg_data = std::env::var("XDG_DATA_HOME")
-            .unwrap_or_else(|_| format!("{}/.local/share", home_str));
+        let xdg_data =
+            std::env::var("XDG_DATA_HOME").unwrap_or_else(|_| format!("{}/.local/share", home_str));
         expanded = expanded.replace("${XDG_DATA_HOME}", &xdg_data);
 
         // ${XDG_CONFIG_HOME} → ~/.config or $XDG_CONFIG_HOME
-        let xdg_config = std::env::var("XDG_CONFIG_HOME")
-            .unwrap_or_else(|_| format!("{}/.config", home_str));
+        let xdg_config =
+            std::env::var("XDG_CONFIG_HOME").unwrap_or_else(|_| format!("{}/.config", home_str));
         expanded = expanded.replace("${XDG_CONFIG_HOME}", &xdg_config);
 
         // ${XDG_STATE_HOME} → ~/.local/state or $XDG_STATE_HOME

@@ -2,8 +2,8 @@ mod analyze;
 mod check;
 mod codegraph;
 mod graph;
-mod validators;
 mod hook_generator;
+mod validators;
 
 pub use analyze::analyze;
 pub use check::check;

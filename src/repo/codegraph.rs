@@ -119,7 +119,10 @@ fn get_hooks_dir() -> Result<PathBuf> {
 /// Get codegraph-mcp directory
 fn get_codegraph_mcp_dir() -> Result<PathBuf> {
     let home = std::env::var("HOME").context("HOME environment variable not set")?;
-    let mcp_dir = PathBuf::from(home).join("nabia").join("platform").join("codegraph-mcp");
+    let mcp_dir = PathBuf::from(home)
+        .join("nabia")
+        .join("platform")
+        .join("codegraph-mcp");
 
     if !mcp_dir.exists() {
         return Err(anyhow!(
@@ -279,10 +282,7 @@ pub fn generate_index(repo_path: &str, language: &str) -> Result<CodegraphIndex>
     let cache_dir_name = format!("{}-{}-{}", repo_name, repo_hash, language);
 
     println!("{}", "  → Analyzing code structure (AST-based)...".cyan());
-    println!(
-        "{}",
-        format!("  → Cache: {}", cache_dir_name).dimmed()
-    );
+    println!("{}", format!("  → Cache: {}", cache_dir_name).dimmed());
 
     // Determine output directory with language and hash
     let graphs_dir = get_graphs_dir()?;
@@ -376,7 +376,8 @@ pub fn load_index(repo_path: &str, language: &str) -> Result<CodegraphIndex> {
     if !graph_file.exists() {
         return Err(anyhow!(
             "Index not found for '{}' (language: {}). Run 'nabi analyze repo' first.",
-            repo_name, language
+            repo_name,
+            language
         ));
     }
 

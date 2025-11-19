@@ -48,7 +48,11 @@ pub fn references(repo_path: &str, symbol: &str, format: &str) -> Result<()> {
     if matching_symbols.is_empty() {
         println!(
             "{}",
-            format!("Symbol '{}' not found. Use 'search' to find symbols first.", symbol).yellow()
+            format!(
+                "Symbol '{}' not found. Use 'search' to find symbols first.",
+                symbol
+            )
+            .yellow()
         );
         return Ok(());
     }
@@ -57,7 +61,11 @@ pub fn references(repo_path: &str, symbol: &str, format: &str) -> Result<()> {
     let target_symbol = matching_symbols[0];
     println!(
         "{}",
-        format!("Finding references to: {} ({})", target_symbol.name, target_symbol.kind).cyan()
+        format!(
+            "Finding references to: {} ({})",
+            target_symbol.name, target_symbol.kind
+        )
+        .cyan()
     );
     println!();
 
@@ -72,10 +80,7 @@ pub fn references(repo_path: &str, symbol: &str, format: &str) -> Result<()> {
         return Ok(());
     }
 
-    println!(
-        "{}",
-        format!("Found {} references:", results.len()).cyan()
-    );
+    println!("{}", format!("Found {} references:", results.len()).cyan());
     println!();
 
     output_symbol_results(format, &results)?;
@@ -96,7 +101,11 @@ pub fn related(repo_path: &str, symbol: &str, depth: usize, format: &str) -> Res
     if matching_symbols.is_empty() {
         println!(
             "{}",
-            format!("Symbol '{}' not found. Use 'search' to find symbols first.", symbol).yellow()
+            format!(
+                "Symbol '{}' not found. Use 'search' to find symbols first.",
+                symbol
+            )
+            .yellow()
         );
         return Ok(());
     }
@@ -105,7 +114,11 @@ pub fn related(repo_path: &str, symbol: &str, depth: usize, format: &str) -> Res
     let target_symbol = matching_symbols[0];
     println!(
         "{}",
-        format!("Finding symbols related to: {} ({})", target_symbol.name, target_symbol.kind).cyan()
+        format!(
+            "Finding symbols related to: {} ({})",
+            target_symbol.name, target_symbol.kind
+        )
+        .cyan()
     );
     println!();
 
@@ -122,12 +135,7 @@ pub fn related(repo_path: &str, symbol: &str, depth: usize, format: &str) -> Res
 
     println!(
         "{}",
-        format!(
-            "Found {} symbols (depth: {}):",
-            results.len(),
-            depth
-        )
-        .cyan()
+        format!("Found {} symbols (depth: {}):", results.len(), depth).cyan()
     );
     println!();
 
@@ -151,18 +159,19 @@ fn load_and_validate_index(repo_path: &str) -> Result<codegraph::CodegraphIndex>
         .unwrap_or("unknown");
 
     // Detect language
-    let detected_lang = codegraph::detect_language(repo_path)
-        .unwrap_or_else(|_| "python".to_string());
+    let detected_lang =
+        codegraph::detect_language(repo_path).unwrap_or_else(|_| "python".to_string());
 
     // Load index from language-aware location
-    codegraph::load_index(repo_path, &detected_lang)
-        .map_err(|e| anyhow!(
+    codegraph::load_index(repo_path, &detected_lang).map_err(|e| {
+        anyhow!(
             "Failed to load index for '{}' (language: {}): {}\nRun 'nabi analyze repo {}' first.",
             repo_name,
             detected_lang,
             e,
             repo_path
-        ))
+        )
+    })
 }
 
 fn output_symbol_results(format: &str, results: &[&codegraph::Symbol]) -> Result<()> {
