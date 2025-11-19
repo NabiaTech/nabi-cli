@@ -1,18 +1,23 @@
-/// Health command handlers - Federation substrate validation and reporting
-
-use std::env;
-use anyhow::Result;
-use colored::*;
 use crate::cli::HealthCommands;
 use crate::routing::route_to_commander;
+use anyhow::Result;
+use colored::*;
+/// Health command handlers - Federation substrate validation and reporting
+use std::env;
 
 pub fn handle_health(command: HealthCommands) -> Result<()> {
     match command {
-        HealthCommands::Quick => {
-            health_quick()
-        },
-        HealthCommands::Substrate { auto_remediate, fsm_only } => {
-            println!("{}", "🏥 Running federation substrate health checks...".green().bold());
+        HealthCommands::Quick => health_quick(),
+        HealthCommands::Substrate {
+            auto_remediate,
+            fsm_only,
+        } => {
+            println!(
+                "{}",
+                "🏥 Running federation substrate health checks..."
+                    .green()
+                    .bold()
+            );
 
             let mut args = vec!["check"];
 
@@ -25,15 +30,19 @@ pub fn handle_health(command: HealthCommands) -> Result<()> {
             }
 
             route_to_commander("health", &args)
-        },
-        HealthCommands::Services => {
-            health_services()
-        },
-        HealthCommands::Ports => {
-            health_ports()
-        },
-        HealthCommands::Check { auto_remediate, fsm_only } => {
-            println!("{}", "🏥 Running federation substrate health checks...".green().bold());
+        }
+        HealthCommands::Services => health_services(),
+        HealthCommands::Ports => health_ports(),
+        HealthCommands::Check {
+            auto_remediate,
+            fsm_only,
+        } => {
+            println!(
+                "{}",
+                "🏥 Running federation substrate health checks..."
+                    .green()
+                    .bold()
+            );
 
             let mut args = vec!["check"];
 
@@ -63,7 +72,12 @@ pub fn handle_health(command: HealthCommands) -> Result<()> {
             route_to_commander("health", &args)
         }
         HealthCommands::Report { format, output } => {
-            println!("{}", format!("📋 Generating health report ({} format)...", format).cyan().bold());
+            println!(
+                "{}",
+                format!("📋 Generating health report ({} format)...", format)
+                    .cyan()
+                    .bold()
+            );
 
             let format_flag = "--format";
             let output_flag = "--output";
@@ -77,14 +91,30 @@ pub fn handle_health(command: HealthCommands) -> Result<()> {
             route_to_commander("health", &args)
         }
         HealthCommands::Dashboard { port } => {
-            println!("{}", format!("📈 Opening Grafana dashboard at http://localhost:{}...", port).blue().bold());
+            println!(
+                "{}",
+                format!(
+                    "📈 Opening Grafana dashboard at http://localhost:{}...",
+                    port
+                )
+                .blue()
+                .bold()
+            );
 
             let port_str = port.to_string();
             let port_flag = "--port";
             route_to_commander("health", &["dashboard", port_flag, &port_str])
         }
         HealthCommands::Api { port, host, debug } => {
-            println!("{}", format!("🌐 Starting Health Monitoring API on http://{}:{}...", host, port).green().bold());
+            println!(
+                "{}",
+                format!(
+                    "🌐 Starting Health Monitoring API on http://{}:{}...",
+                    host, port
+                )
+                .green()
+                .bold()
+            );
 
             let port_str = port.to_string();
             let mut args = vec!["api", &port_str, &host];
@@ -102,11 +132,11 @@ pub fn handle_health(command: HealthCommands) -> Result<()> {
 pub fn health_quick() -> Result<()> {
     println!("🔍 Quick Health Check (Bootstrap Validation)");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    
+
     // Check commander binaries exist
     let commanders = vec!["claude", "data", "federation"];
     let mut all_ok = true;
-    
+
     for cmd in commanders {
         let binary_path = format!("{}/.local/bin/nabi-{}", env::var("HOME").unwrap(), cmd);
         if std::path::Path::new(&binary_path).exists() {
@@ -116,7 +146,7 @@ pub fn health_quick() -> Result<()> {
             all_ok = false;
         }
     }
-    
+
     // XDG compliance check
     let xdg_dirs = vec![
         ("CONFIG", "~/.config/nabi"),
@@ -124,7 +154,7 @@ pub fn health_quick() -> Result<()> {
         ("STATE", "~/.local/state/nabi"),
         ("CACHE", "~/.cache/nabi"),
     ];
-    
+
     println!("\n📁 XDG Directory Compliance:");
     for (name, path) in xdg_dirs {
         let home = env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
@@ -136,7 +166,7 @@ pub fn health_quick() -> Result<()> {
             all_ok = false;
         }
     }
-    
+
     if all_ok {
         println!("\n✅ Bootstrap health: PASS");
         Ok(())
@@ -149,66 +179,82 @@ pub fn health_quick() -> Result<()> {
 /// Port health check (wraps port::check for health namespace)
 pub fn health_ports() -> Result<()> {
     use crate::commands::port;
-    
+
     println!("🔌 Port Health Check");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    
+
     // Call existing port check logic
     port::cmd_check()?;
-    
+
     println!("\n📊 Port validation complete");
     println!("💡 For detailed port management, use: nabi port check");
-    
+
     Ok(())
 }
 
 /// Federation service health check (replaces `nabi federation health`)
 pub fn health_services() -> Result<()> {
-    use std::process::Command;
-    use std::collections::HashMap;
     use serde_json::json;
-    
+    use std::collections::HashMap;
+    use std::process::Command;
+
     println!("🏥 Federation Services Health Check");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    
+
     // Load registry
-    let registry_path = format!("{}/.config/nabi/federation-registry.toml", env::var("HOME")?);
+    let registry_path = format!(
+        "{}/.config/nabi/federation-registry.toml",
+        env::var("HOME")?
+    );
     let registry_content = std::fs::read_to_string(&registry_path)?;
-    let registry: HashMap<String, HashMap<String, toml::Value>> = toml::from_str(&registry_content)?;
-    
-    let services = registry.get("services").ok_or_else(|| anyhow::anyhow!("No services in registry"))?;
-    
+    let registry: HashMap<String, HashMap<String, toml::Value>> =
+        toml::from_str(&registry_content)?;
+
+    let services = registry
+        .get("services")
+        .ok_or_else(|| anyhow::anyhow!("No services in registry"))?;
+
     let mut healthy = 0;
     let mut unhealthy = 0;
     let mut results = Vec::new();
-    
+
     for (name, config) in services {
-        let service_type = config.get("type").and_then(|v| v.as_str()).unwrap_or("unknown");
-        let is_blocking = config.get("blocking").and_then(|v| v.as_bool()).unwrap_or(false);
-        
+        let service_type = config
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        let is_blocking = config
+            .get("blocking")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
         let status = match service_type {
             "docker" => {
                 // Check Docker container
                 let output = Command::new("docker")
-                    .args(&["ps", "--filter", &format!("name={}", name), "--format", "{{.Status}}"])
+                    .args(&[
+                        "ps",
+                        "--filter",
+                        &format!("name={}", name),
+                        "--format",
+                        "{{.Status}}",
+                    ])
                     .output()?;
                 if output.stdout.is_empty() {
                     "❌ Not Running"
                 } else {
                     "✅ Running"
                 }
-            },
+            }
             "launchagent" => {
                 // Check LaunchAgent
-                let output = Command::new("launchctl")
-                    .args(&["list", name])
-                    .output()?;
+                let output = Command::new("launchctl").args(&["list", name]).output()?;
                 if output.status.success() {
                     "✅ Running"
                 } else {
                     "❌ Not Loaded"
                 }
-            },
+            }
             "nats" => {
                 // Check NATS connectivity
                 let output = Command::new("nc")
@@ -219,24 +265,27 @@ pub fn health_services() -> Result<()> {
                 } else {
                     "❌ Unreachable"
                 }
-            },
-            _ => "⚠️  Unknown Type"
+            }
+            _ => "⚠️  Unknown Type",
         };
-        
+
         let blocking_marker = if is_blocking { "🔒" } else { "" };
         println!("{}{}: {} ({})", blocking_marker, name, status, service_type);
-        
+
         if status.starts_with("✅") {
             healthy += 1;
         } else {
             unhealthy += 1;
         }
-        
+
         results.push((name.clone(), status.to_string(), service_type.to_string()));
     }
-    
+
     // Save report
-    let output_path = format!("{}/.local/state/nabi/health-checks/services/report.json", env::var("HOME")?);
+    let output_path = format!(
+        "{}/.local/state/nabi/health-checks/services/report.json",
+        env::var("HOME")?
+    );
     let report = json!({
         "timestamp": chrono::Utc::now().to_rfc3339(),
         "total": services.len(),
@@ -246,13 +295,17 @@ pub fn health_services() -> Result<()> {
             json!({"name": n, "status": s, "type": t})
         }).collect::<Vec<_>>()
     });
-    
+
     std::fs::create_dir_all(std::path::Path::new(&output_path).parent().unwrap())?;
     std::fs::write(&output_path, serde_json::to_string_pretty(&report)?)?;
-    
-    println!("\n📊 Summary: {}/{} services healthy", healthy, services.len());
+
+    println!(
+        "\n📊 Summary: {}/{} services healthy",
+        healthy,
+        services.len()
+    );
     println!("📄 Report saved: {}", output_path);
-    
+
     if unhealthy > 0 {
         Err(anyhow::anyhow!("{} services unhealthy", unhealthy))
     } else {

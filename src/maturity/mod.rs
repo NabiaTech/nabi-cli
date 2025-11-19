@@ -28,10 +28,10 @@
 //! ```
 
 use anyhow::{Context, Result};
+use colored::*;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use colored::*;
 
 /// Implementation maturity stage
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -57,7 +57,10 @@ impl MaturityStage {
             "prototype" => Ok(Self::Prototype),
             "production" => Ok(Self::Production),
             "transitioning" => Ok(Self::Transitioning),
-            _ => anyhow::bail!("Invalid maturity stage: {}. Expected: prototype, production, transitioning", s),
+            _ => anyhow::bail!(
+                "Invalid maturity stage: {}. Expected: prototype, production, transitioning",
+                s
+            ),
         }
     }
 
@@ -98,7 +101,10 @@ impl Language {
             "typescript" | "ts" => Ok(Self::Typescript),
             "rust" | "rs" => Ok(Self::Rust),
             "shell" | "bash" | "sh" => Ok(Self::Shell),
-            _ => anyhow::bail!("Unsupported language: {}. Expected: python, typescript, rust, shell", s),
+            _ => anyhow::bail!(
+                "Unsupported language: {}. Expected: python, typescript, rust, shell",
+                s
+            ),
         }
     }
 
@@ -233,7 +239,10 @@ impl ImplementationRoute {
             "Implementation Route".bold(),
             format!("({})", config_name).dimmed()
         );
-        println!("  Stage: {}", format!("{:?}", self.stage).color(self.stage.color()));
+        println!(
+            "  Stage: {}",
+            format!("{:?}", self.stage).color(self.stage.color())
+        );
         println!("  Language: {}", format!("{:?}", self.language).cyan());
         println!("  Path: {}", self.path.display().to_string().dimmed());
 
@@ -310,7 +319,12 @@ pub fn route_command(
         }
 
         MaturityStage::Transitioning => {
-            println!("{}", "🔄 Transitioning mode: Running both implementations".cyan().bold());
+            println!(
+                "{}",
+                "🔄 Transitioning mode: Running both implementations"
+                    .cyan()
+                    .bold()
+            );
 
             // Execute prototype
             println!("{}", "  Running prototype...".dimmed());
@@ -323,7 +337,8 @@ pub fn route_command(
                 .context("No production route defined for transitioning stage")?;
 
             println!("{}", "  Running production...".dimmed());
-            let production_result = execute_subprocess(&prod_route.language, &prod_route.path, args)?;
+            let production_result =
+                execute_subprocess(&prod_route.language, &prod_route.path, args)?;
 
             // Compare results
             compare_results(&prototype_result, &production_result)?;
@@ -367,9 +382,13 @@ fn execute_subprocess(language: &Language, path: &Path, args: &[&str]) -> Result
         }
     }
 
-    let output = cmd
-        .output()
-        .with_context(|| format!("Failed to execute {} at {}", language.executor(), path.display()))?;
+    let output = cmd.output().with_context(|| {
+        format!(
+            "Failed to execute {} at {}",
+            language.executor(),
+            path.display()
+        )
+    })?;
 
     Ok(ExecutionResult {
         success: output.status.success(),
@@ -389,14 +408,22 @@ fn compare_results(prototype: &ExecutionResult, production: &ExecutionResult) ->
 
     println!(
         "  Exit codes: {} (prototype: {}, production: {})",
-        if exit_match { "✅ Match".green() } else { "❌ Differ".red() },
+        if exit_match {
+            "✅ Match".green()
+        } else {
+            "❌ Differ".red()
+        },
         prototype.exit_code,
         production.exit_code
     );
 
     println!(
         "  Output: {}",
-        if stdout_match { "✅ Match".green() } else { "⚠️  Differ".yellow() }
+        if stdout_match {
+            "✅ Match".green()
+        } else {
+            "⚠️  Differ".yellow()
+        }
     );
 
     if !exit_match {
@@ -405,7 +432,10 @@ fn compare_results(prototype: &ExecutionResult, production: &ExecutionResult) ->
 
     if !stdout_match {
         println!();
-        println!("{}", "⚠️  Output differs but exit codes match. Review differences:".yellow());
+        println!(
+            "{}",
+            "⚠️  Output differs but exit codes match. Review differences:".yellow()
+        );
         println!("{}", "  Prototype output:".dimmed());
         for line in prototype.stdout.lines().take(10) {
             println!("    {}", line.dimmed());
@@ -422,8 +452,7 @@ fn compare_results(prototype: &ExecutionResult, production: &ExecutionResult) ->
 /// Expand ~ and environment variables in path
 fn expand_path(path: &str) -> Result<PathBuf> {
     if path.starts_with('~') {
-        let home = dirs::home_dir()
-            .context("Could not determine home directory")?;
+        let home = dirs::home_dir().context("Could not determine home directory")?;
         Ok(home.join(&path[2..]))
     } else {
         Ok(PathBuf::from(shellexpand::env(path)?.to_string()))
@@ -432,4 +461,3 @@ fn expand_path(path: &str) -> Result<PathBuf> {
 
 #[cfg(test)]
 mod tests;
-
