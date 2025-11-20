@@ -1,0 +1,67 @@
+version: '3'
+
+tasks:
+  # XDG Path Resolution Regression Tests
+  test:xdg:rust:
+    desc: Run Rust XDG path resolution regression tests
+    dir: ~/nabia/core/nabi-cli
+    cmds:
+      - cargo test --test path_resolution_regression --all-features -- --nocapture
+
+  test:xdg:rust:integration:
+    desc: Run Rust cross-language integration tests
+    dir: ~/nabia/core/nabi-cli
+    cmds:
+      - cargo test --test test_event_stream_cross_language --all-features -- --nocapture
+
+  test:xdg:python:
+    desc: Run Python XDG path resolution regression tests
+    dir: ~/nabia/core/hooks
+    cmds:
+      - pytest tests/test_path_xdg_regression.py -v
+
+  test:xdg:python:integration:
+    desc: Run Python integration tests (requires nabi binary)
+    dir: ~/nabia/core/hooks
+    cmds:
+      - pytest tests/test_path_xdg_regression.py -v -m integration
+
+  test:xdg:all:
+    desc: Run ALL XDG regression tests (Rust + Python + Integration)
+    cmds:
+      - task: test:xdg:rust
+      - task: test:xdg:python
+      - task: test:xdg:rust:integration
+      - task: test:xdg:python:integration
+
+  test:xdg:quick:
+    desc: Quick XDG regression check (unit tests only, no integration)
+    cmds:
+      - task: test:xdg:rust
+      - task: test:xdg:python
+
+  validate:xdg:
+    desc: Validate XDG compliance across codebase (static analysis)
+    cmds:
+      - echo "=== Checking for XDG violations ==="
+      - grep -r "dirs::data_local_dir\|dirs::state_dir\|dirs::cache_dir" src/ && echo "❌ Found raw dirs usage! Use NabiPaths instead" || echo "✅ No raw dirs usage found"
+      - cd ../hooks && grep -r 'Path\.home.*"\.local"' src/*.py && echo "❌ Found hardcoded paths in Python! Use platform_paths instead" || echo "✅ No hardcoded paths in Python"
+      - echo ""
+      - echo "Run 'task test:xdg:all' to verify fixes"
+
+  build:
+    desc: Build nabi-cli
+    cmds:
+      - cargo build --release
+
+  install:
+    desc: Install nabi binary to ~/.local/bin
+    cmds:
+      - cargo build --release
+      - cp target/release/nabi ~/.local/bin/nabi
+      - echo "✓ Installed nabi to ~/.local/bin/nabi"
+
+  test:
+    desc: Run all tests
+    cmds:
+      - cargo test --all-features
