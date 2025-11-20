@@ -26,7 +26,9 @@ mod transform;
 mod utils;
 use commands::events;
 use commands::kernel;
+use commands::mcp;
 use commands::port;
+use commands::services;
 use commands::tmux;
 use cli::{AuraCommands, BackupCommands, ScanSourceType};
 use handlers::aura::handle_aura;
@@ -216,6 +218,14 @@ enum Commands {
         #[command(subcommand)]
         command: PortCommands,
     },
+    /// Service orchestration (docker-compose deployment and management)
+    ///
+    /// Centralized service deployment and validation for federation infrastructure.
+    /// Manages docker-compose stacks across platform, core, and memchain groups.
+    Services {
+        #[command(subcommand)]
+        command: ServicesCommands,
+    },
     /// Tmux pane coordination (multi-agent orchestration)
     ///
     /// Safely inject commands into tmux panes with guaranteed atomic delivery.
@@ -234,6 +244,11 @@ enum Commands {
     Events {
         #[command(subcommand)]
         command: events::EventsCommands,
+    },
+    /// MCP federation commands (event publishing, task dispatch, acknowledgments)
+    Mcp {
+        #[command(subcommand)]
+        command: mcp::McpCommands,
     },
     Hooks {
         #[command(subcommand)]
@@ -1238,6 +1253,87 @@ enum PortCommands {
 }
 
 #[derive(Subcommand)]
+enum ServicesCommands {
+    /// Show status of all running containers
+    #[command(
+        long_about = "Display all running Docker containers with their status and ports.\n\n\
+                      Shows container names, health status, and port mappings. Useful for \
+                      understanding current deployment state across all service groups.",
+        after_help = "EXAMPLES:\n  \
+                      nabi services status\n  \
+                      nabi services status --format json\n\n\
+                      RELATED:\n  \
+                      nabi services validate - Check compose file validity\n  \
+                      nabi services deploy   - Deploy service groups"
+    )]
+    Status {
+        /// Output format (table or json)
+        #[arg(short, long, value_name = "FORMAT")]
+        format: Option<String>,
+    },
+    /// Validate docker-compose files
+    #[command(
+        long_about = "Validate all docker-compose files for syntax and configuration errors.\n\n\
+                      Checks compose files across platform, core, and memchain service groups. \
+                      Ensures all files are valid before deployment.",
+        after_help = "EXAMPLES:\n  \
+                      nabi services validate\n\n\
+                      RELATED:\n  \
+                      nabi services deploy - Deploy after validation\n  \
+                      nabi port check     - Validate port allocations"
+    )]
+    Validate,
+    /// Rebuild container images
+    #[command(
+        long_about = "Rebuild Docker images for a service group.\n\n\
+                      Runs docker-compose build for selected services. Use this after code \
+                      changes that require image rebuilding.",
+        after_help = "EXAMPLES:\n  \
+                      nabi services rebuild all\n  \
+                      nabi services rebuild platform\n  \
+                      nabi services rebuild memchain\n\n\
+                      GROUPS:\n  \
+                      all        - All services\n  \
+                      monitoring - Loki, Prometheus, Grafana\n  \
+                      platform   - SurrealDB, Knowledge Graph, Vigil\n  \
+                      core       - OAuth MCP Proxy\n  \
+                      memchain   - MCP SSE, Coordination Server\n\n\
+                      RELATED:\n  \
+                      nabi services deploy - Deploy after rebuild"
+    )]
+    Rebuild {
+        /// Service group to rebuild
+        #[arg(value_name = "GROUP", default_value = "all")]
+        group: String,
+    },
+    /// Deploy service group
+    #[command(
+        long_about = "Deploy services using docker-compose up -d.\n\n\
+                      Automatically checks Docker networks exist, creates them if missing, \
+                      then deploys selected service groups. Shows deployment status and \
+                      container health after completion.",
+        after_help = "EXAMPLES:\n  \
+                      nabi services deploy all\n  \
+                      nabi services deploy platform\n  \
+                      nabi services deploy monitoring\n\n\
+                      GROUPS:\n  \
+                      all        - All services\n  \
+                      monitoring - Loki, Prometheus, Grafana\n  \
+                      platform   - SurrealDB, Knowledge Graph, Vigil\n  \
+                      core       - OAuth MCP Proxy\n  \
+                      memchain   - MCP SSE, Coordination Server\n\n\
+                      RELATED:\n  \
+                      nabi services status   - Check deployment status\n  \
+                      nabi services validate - Validate before deploy"
+    )]
+    Deploy {
+        /// Service group to deploy
+        #[arg(value_name = "GROUP", default_value = "all")]
+        group: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum HooksCommands {
     /// Transform hooks from schema to derived state (or use stable hooks)
     Transform {
@@ -1602,9 +1698,11 @@ fn main() -> Result<()> {
         Commands::Backup { command } => handle_backup(command),
         Commands::Agent { command } => handle_agent(command),
         Commands::Port { command } => handle_port(command),
+        Commands::Services { command } => handle_services(command),
         Commands::Tmux { command } => tmux::handle_tmux_commands(command),
         Commands::Kernel { command } => kernel::handle_kernel_commands(command),
         Commands::Events { command } => events::handle_events_commands(command),
+        Commands::Mcp { command } => mcp::handle_mcp_commands(command),
         Commands::Hooks { command } => handle_hooks(command),
         Commands::Mode { mode } => handle_mode(mode),
         Commands::Riff { args } => handle_riff(args),
@@ -1915,15 +2013,69 @@ fn handle_tool(command: ToolCommands) -> Result<()> {
 }
 
 fn handle_tool_exec(tool_id: &str, args: Vec<String>) -> Result<()> {
-    println!("{}",format!("🔧 Executing tool: {}", tool_id).cyan().bold());
-
-    // For now, this is a placeholder. Full implementation would:
     // 1. Load tool manifest from ~/.config/nabi/tools/{tool_id}.toml
-    // 2. Resolve the tool's venv/runtime
-    // 3. Construct and execute the command
-    // 4. Handle output and exit codes
+    let manifest_path = NabiPaths::config_dir()?.join("tools").join(format!("{}.toml", tool_id));
 
-    Err(anyhow::anyhow!("Tool execution not yet implemented for '{}'", tool_id))
+    if !manifest_path.exists() {
+        anyhow::bail!("Tool '{}' not registered. Run: nabi tool list", tool_id);
+    }
+
+    let content = std::fs::read_to_string(&manifest_path)
+        .with_context(|| format!("Failed to read manifest: {}", manifest_path.display()))?;
+
+    let parsed: toml::Value = toml::from_str(&content)
+        .with_context(|| format!("Failed to parse manifest for '{}'", tool_id))?;
+
+    // 2. Extract execution command from runtime.execution
+    let execution = parsed
+        .get("runtime")
+        .and_then(|r| r.get("execution"))
+        .and_then(|e| e.as_str())
+        .ok_or_else(|| anyhow::anyhow!("Missing runtime.execution in manifest for '{}'", tool_id))?;
+
+    // 3. Check if tool uses a venv
+    let venv_location = parsed
+        .get("venv")
+        .and_then(|v| v.get("location"))
+        .and_then(|l| l.as_str());
+
+    // 4. Construct and execute the command
+    let mut cmd_parts: Vec<String> = execution.split_whitespace().map(String::from).collect();
+    cmd_parts.extend(args);
+
+    // If venv exists, prepend activation to PATH
+    let status = if let Some(venv_path) = venv_location {
+        let venv_expanded = expand_home(venv_path)?;
+        let venv_bin = venv_expanded.join("bin");
+
+        if !venv_bin.exists() {
+            eprintln!("{}", format!("⚠️  Warning: venv not found at {}", venv_bin.display()).yellow());
+            eprintln!("{}", format!("    Run: nabi tool setup {}", tool_id).yellow());
+        }
+
+        // Prepend venv/bin to PATH
+        let current_path = std::env::var("PATH").unwrap_or_default();
+        let new_path = format!("{}:{}", venv_bin.display(), current_path);
+
+        std::process::Command::new(&cmd_parts[0])
+            .args(&cmd_parts[1..])
+            .env("PATH", new_path)
+            .env("VIRTUAL_ENV", venv_expanded.display().to_string())
+            .status()
+            .with_context(|| format!("Failed to execute '{}'", cmd_parts.join(" ")))?
+    } else {
+        std::process::Command::new(&cmd_parts[0])
+            .args(&cmd_parts[1..])
+            .status()
+            .with_context(|| format!("Failed to execute '{}'", cmd_parts.join(" ")))?
+    };
+
+    // 5. Handle exit codes
+    if !status.success() {
+        std::process::exit(status.code().unwrap_or(1));
+    }
+
+    Ok(())
 }
 
 fn handle_register(command: RegisterCommands) -> Result<()> {
@@ -3694,6 +3846,24 @@ fn handle_port(command: PortCommands) -> Result<()> {
         PortCommands::GenerateEnv => {
             println!("{}", "📝 Generating .env file...".cyan().bold());
             port::cmd_generate_env()
+        }
+    }
+}
+
+fn handle_services(command: ServicesCommands) -> Result<()> {
+    match command {
+        ServicesCommands::Status { format } => {
+            println!("{}", "📊 Checking service status...".cyan().bold());
+            services::cmd_status(format.as_deref())
+        }
+        ServicesCommands::Validate => {
+            services::cmd_validate()
+        }
+        ServicesCommands::Rebuild { group } => {
+            services::cmd_rebuild(&group)
+        }
+        ServicesCommands::Deploy { group } => {
+            services::cmd_deploy(&group)
         }
     }
 }
