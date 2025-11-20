@@ -11,6 +11,8 @@ use std::io::{BufRead, BufReader, Write as IoWrite};
 use std::path::PathBuf;
 use uuid::Uuid;
 
+use crate::paths::NabiPaths;
+
 #[derive(Subcommand)]
 pub enum EventsCommands {
     /// Publish a new event to the federation event bus
@@ -202,10 +204,7 @@ pub fn handle_events_commands(cmd: EventsCommands) -> Result<()> {
 }
 
 fn get_event_store_path() -> Result<PathBuf> {
-    let state_dir = dirs::data_local_dir()
-        .context("Could not determine local data directory")?
-        .join("nabi")
-        .join("events");
+    let state_dir = NabiPaths::data_dir()?.join("events");
     fs::create_dir_all(&state_dir)?;
     Ok(state_dir.join("event_stream.jsonl"))
 }
@@ -270,9 +269,7 @@ fn handle_publish(
     writeln!(file, "{}", json_line).context("Failed to write event")?;
 
     // Storage 2: Write to date-based individual file
-    let state_dir = dirs::data_local_dir()
-        .context("Could not determine local data directory")?
-        .join("nabi")
+    let state_dir = NabiPaths::data_dir()?
         .join("events")
         .join(event.timestamp.format("%Y-%m-%d").to_string());
 
