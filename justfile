@@ -5,8 +5,8 @@
 # These are used in bash recipes where ${HOME} etc. will be available
 # For justfile variables, we use safe defaults
 home := env_var('HOME')
-# Placeholder paths - actual values resolved in recipe with bash eval
-cache_target_dir_base := 'nabi/nabi-cli/target'
+# Build artifacts go directly to data/bin (backed up, on PATH)
+# Binary lands at: ~/.local/share/nabi/bin/release/nabi
 nabi_data_bin := home + '/.local/share/nabi/bin'
 zsh_completion_dir := home + '/.zsh/completions'
 zsh_completion_file := zsh_completion_dir + '/_nabi'
@@ -23,10 +23,10 @@ default:
 @config:
     #!/bin/bash
     set -e
-    XDG_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}"
+    XDG_DATA="${XDG_DATA_HOME:-$HOME/.local/share}"
     mkdir -p .cargo
-    sed "s|\\\$XDG_CACHE_HOME|${XDG_CACHE}|g" .cargo/config.toml.template > .cargo/config.toml
-    echo "Generated .cargo/config.toml with target-dir: ${XDG_CACHE}/nabi/nabi-cli/target"
+    sed "s|\\\$XDG_DATA_HOME|${XDG_DATA}|g" .cargo/config.toml.template > .cargo/config.toml
+    echo "Generated .cargo/config.toml with target-dir: ${XDG_DATA}/nabi/bin"
 
 # Build with XDG paths
 @build: config
@@ -36,8 +36,8 @@ default:
 @sign:
     #!/bin/bash
     set -e
-    XDG_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}"
-    BINARY="${XDG_CACHE}/nabi/nabi-cli/target/release/nabi"
+    XDG_DATA="${XDG_DATA_HOME:-$HOME/.local/share}"
+    BINARY="${XDG_DATA}/nabi/bin/release/nabi"
 
     if [ ! -f "${BINARY}" ]; then
         echo "❌ Binary not found: ${BINARY}"
@@ -97,34 +97,24 @@ default:
     just watch
 
 # Install without verbose output (for watch mode)
+# With new config, binary is already in data/bin/release - just symlink to nabi
 @install-quiet: completions sign
     #!/bin/bash
     set -e
-    XDG_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}"
     XDG_DATA="${XDG_DATA_HOME:-$HOME/.local/share}"
     NABI_BIN="${XDG_DATA}/nabi/bin"
-    BINARY="${XDG_CACHE}/nabi/nabi-cli/target/release/nabi"
-    mkdir -p "${NABI_BIN}"
-    cp "${BINARY}" "${NABI_BIN}/nabi"
-    chmod +x "${NABI_BIN}/nabi"
+    BINARY="${NABI_BIN}/release/nabi"
 
-    # Re-sign the installed binary (preserve original signature)
-    IDENTITY=$(security find-identity -v -p codesigning | grep 'Apple Development' | head -1 | awk -F'"' '{print $2}')
-    if [ -n "$IDENTITY" ]; then
-        codesign --force --deep --sign "$IDENTITY" "${NABI_BIN}/nabi" >/dev/null 2>&1
-    else
-        codesign --force --deep --sign - "${NABI_BIN}/nabi" >/dev/null 2>&1
-    fi
-    xattr -cr "${NABI_BIN}/nabi" 2>/dev/null || true
-
-    echo "✅ Installed nabi to ${NABI_BIN}/nabi"
+    # Create symlink from bin/nabi -> bin/release/nabi
+    ln -sf "${BINARY}" "${NABI_BIN}/nabi"
+    echo "✅ Linked nabi to ${NABI_BIN}/nabi"
 
 # Generate zsh completions from the freshly built binary with integrated dynamic enhancements
 @completions: build
     #!/bin/bash
     set -e
-    XDG_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}"
-    BINARY="${XDG_CACHE}/nabi/nabi-cli/target/release/nabi"
+    XDG_DATA="${XDG_DATA_HOME:-$HOME/.local/share}"
+    BINARY="${XDG_DATA}/nabi/bin/release/nabi"
     ZSH_COMP_DIR="$HOME/.zsh/completions"
     ZSH_COMP_FILE="${ZSH_COMP_DIR}/_nabi"
 
@@ -159,29 +149,16 @@ default:
     bash scripts/validate-completions.sh --verbose || { echo "❌ Completion validation failed!"; exit 1; }
     echo "✅ Completion composition validated"
 
-# Install to ~/.local/share/nabi/bin and refresh completions
+# Install to ~/.local/share/nabi/bin (binary already built there, just symlink)
 @install: completions sign
     #!/bin/bash
     set -e
     XDG_DATA="${XDG_DATA_HOME:-$HOME/.local/share}"
-    XDG_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}"
     NABI_BIN="${XDG_DATA}/nabi/bin"
-    BINARY="${XDG_CACHE}/nabi/nabi-cli/target/release/nabi"
-    mkdir -p "${NABI_BIN}"
-    cp "${BINARY}" "${NABI_BIN}/nabi"
-    chmod +x "${NABI_BIN}/nabi"
+    BINARY="${NABI_BIN}/release/nabi"
 
-    # Re-sign the installed binary with Apple Development certificate
-    echo "🔐 Signing installed binary..."
-    IDENTITY=$(security find-identity -v -p codesigning | grep 'Apple Development' | head -1 | awk -F'"' '{print $2}')
-    if [ -n "$IDENTITY" ]; then
-        codesign --force --deep --sign "$IDENTITY" "${NABI_BIN}/nabi"
-        echo "   ✓ Signed with: $IDENTITY"
-    else
-        echo "   ⚠️  No Apple Development certificate found, using adhoc"
-        codesign --force --deep --sign - "${NABI_BIN}/nabi"
-    fi
-    xattr -cr "${NABI_BIN}/nabi" 2>/dev/null || true
+    # Create symlink from bin/nabi -> bin/release/nabi
+    ln -sf "${BINARY}" "${NABI_BIN}/nabi"
 
     # Verify the binary actually works
     echo "🧪 Verifying installation..."
@@ -192,8 +169,8 @@ default:
         echo "   ❌ Binary verification failed with exit code: $EXIT_CODE"
         if [ $EXIT_CODE -eq 137 ]; then
             echo "   💡 Exit 137 = SIGKILL. Re-trying with adhoc signing..."
-            codesign --force --deep --sign - "${NABI_BIN}/nabi"
-            xattr -cr "${NABI_BIN}/nabi" 2>/dev/null || true
+            codesign --force --deep --sign - "${BINARY}"
+            xattr -cr "${BINARY}" 2>/dev/null || true
             if "${NABI_BIN}/nabi" --version >/dev/null 2>&1; then
                 echo "   ✓ Recovery successful with adhoc signing"
             else
@@ -209,13 +186,14 @@ default:
     echo ""
     "${NABI_BIN}/nabi" --version
 
-# Clean build artifacts
+# Clean build artifacts (removes release/, debug/, deps/ from data/bin)
 @clean:
     #!/bin/bash
     set -e
-    XDG_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}"
+    XDG_DATA="${XDG_DATA_HOME:-$HOME/.local/share}"
     cargo clean
-    rm -rf "${XDG_CACHE}/nabi/nabi-cli/target"
+    rm -rf "${XDG_DATA}/nabi/bin/release" "${XDG_DATA}/nabi/bin/debug" "${XDG_DATA}/nabi/bin/deps" "${XDG_DATA}/nabi/bin/.fingerprint"
+    echo "🧹 Cleaned build artifacts from ${XDG_DATA}/nabi/bin"
 
 # Run tests
 @test:

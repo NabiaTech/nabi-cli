@@ -1,8 +1,9 @@
 [build]
 # XDG-compliant build artifact location
-# This file is generated from .cargo/config.toml.template
-# Run: make config (or manually substitute $XDG_CACHE_HOME)
-target-dir = "$XDG_CACHE_HOME/nabi/nabi-cli/target"
+# Binary lands directly in nabi data/bin (backed up, on PATH)
+# Intermediate artifacts stay in release/ and deps/ subdirs
+# Run: just config (generates .cargo/config.toml from this template)
+target-dir = "$XDG_DATA_HOME/nabi/bin"
 
 [target.x86_64-apple-darwin]
 rustflags = ["-C", "link-arg=-undefined", "-C", "link-arg=dynamic_lookup"]

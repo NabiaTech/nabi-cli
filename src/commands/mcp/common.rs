@@ -9,13 +9,13 @@ use std::io::Write as IoWrite;
 use std::path::PathBuf;
 
 /// Get event store path (JSONL file for all events)
+/// Uses XDG_DATA_HOME/nabi/events for cross-language compatibility
 pub fn get_event_store_path() -> Result<PathBuf> {
-    let state_dir = dirs::data_local_dir()
-        .context("Could not determine local data directory")?
-        .join("nabi")
+    // Use NabiPaths for XDG-compliant path resolution
+    let events_dir = crate::paths::NabiPaths::data_dir()?
         .join("events");
-    fs::create_dir_all(&state_dir)?;
-    Ok(state_dir.join("event_stream.jsonl"))
+    fs::create_dir_all(&events_dir)?;
+    Ok(events_dir.join("event_stream.jsonl"))
 }
 
 /// Get kernel event queue path for federation
