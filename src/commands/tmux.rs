@@ -2741,10 +2741,9 @@ fn handle_capture_pane(pane: Option<&str>, lines: u32, format: &str, use_bat: bo
             // Text output format (default)
             if use_bat && !content.is_empty() {
                 // Try to use bat for syntax highlighting (opt-in)
+                // Note: we don't specify --language to let bat auto-detect the content type
                 let bat_result = Command::new("bat")
                     .args(&[
-                        "--language",
-                        "text",
                         "--color",
                         "always",
                         "--plain",
