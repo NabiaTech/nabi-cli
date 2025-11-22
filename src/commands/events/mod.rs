@@ -42,6 +42,29 @@ pub enum EventsCommands {
         stdin: bool,
     },
 
+    /// List events (TUI-friendly JSON output)
+    List {
+        /// Filter by event source(s), comma-separated
+        #[arg(long)]
+        source: Option<String>,
+
+        /// Filter by severity level(s), comma-separated
+        #[arg(long)]
+        severity: Option<String>,
+
+        /// Filter by acknowledged status
+        #[arg(long)]
+        acknowledged: Option<bool>,
+
+        /// Maximum number of events to return
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+
+        /// Always output as JSON (for TUI compatibility)
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Pull recent events from the event bus
     Pull {
         /// How far back to look (e.g., "1h", "24h", "7d")
@@ -177,6 +200,13 @@ pub fn handle_events_commands(cmd: EventsCommands) -> Result<()> {
             timestamp,
             stdin,
         } => handle_publish(source, severity, message, metadata, timestamp, stdin),
+        EventsCommands::List {
+            source,
+            severity,
+            acknowledged,
+            limit,
+            json,
+        } => handle_list(source, severity, acknowledged, limit, json),
         EventsCommands::Pull {
             since,
             limit,
@@ -283,6 +313,73 @@ fn handle_publish(
         "{}✓{} Event published: [{}] {} (ID: {})",
         "\x1b[32m", "\x1b[0m", event.source, event.message, event.id
     );
+
+    Ok(())
+}
+
+fn handle_list(
+    source_filter: Option<String>,
+    severity_filter: Option<String>,
+    _acknowledged_filter: Option<bool>,
+    limit: usize,
+    _json: bool, // Always JSON for TUI
+) -> Result<()> {
+    let store_path = get_event_store_path()?;
+
+    if !store_path.exists() {
+        // Return empty array for TUI
+        println!("{{\"events\": []}}");
+        return Ok(());
+    }
+
+    let file = File::open(&store_path).context("Failed to open event store")?;
+    let reader = BufReader::new(file);
+
+    let source_filters: Option<Vec<String>> =
+        source_filter.map(|s| s.split(',').map(|x| x.trim().to_string()).collect());
+
+    let severity_filters: Option<Vec<String>> =
+        severity_filter.map(|s| s.split(',').map(|x| x.trim().to_lowercase()).collect());
+
+    let mut events: Vec<Event> = Vec::new();
+
+    for line in reader.lines() {
+        let line = line?;
+        let event: Event = match serde_json::from_str(&line) {
+            Ok(e) => e,
+            Err(_) => continue, // Skip malformed lines
+        };
+
+        // Apply filters
+        if let Some(ref sources) = source_filters {
+            if !sources.contains(&event.source) {
+                continue;
+            }
+        }
+
+        if let Some(ref severities) = severity_filters {
+            let severity_str = format!("{:?}", event.severity).to_lowercase();
+            if !severities.contains(&severity_str) {
+                continue;
+            }
+        }
+
+        events.push(event);
+
+        if events.len() >= limit {
+            break;
+        }
+    }
+
+    // Reverse to show newest first
+    events.reverse();
+
+    // Output in TUI-expected format
+    let output = serde_json::json!({
+        "events": events
+    });
+
+    println!("{}", serde_json::to_string_pretty(&output)?);
 
     Ok(())
 }
