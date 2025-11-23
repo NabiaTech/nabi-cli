@@ -3585,8 +3585,10 @@ fn handle_record(command: RecordCommands) -> Result<()> {
 #[derive(Debug, Deserialize)]
 struct KernelConfig {
     kernel_venv: String,
-    daemon_script: String,
-    version: String,
+    #[serde(default)]
+    daemon_script: Option<String>,
+    #[serde(default)]
+    version: Option<String>,
 }
 
 /// Expand ~ to home directory
