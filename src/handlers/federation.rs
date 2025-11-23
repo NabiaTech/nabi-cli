@@ -3,6 +3,7 @@ use crate::routing::route_to_commander;
 /// Federation command handlers
 use anyhow::Result;
 use colored::*;
+use std::process::Command;
 
 pub fn handle_federation(command: FederationCommands) -> Result<()> {
     match command {
@@ -91,6 +92,30 @@ pub fn handle_federation(command: FederationCommands) -> Result<()> {
         FederationCommands::Agents => {
             println!("{}", "🤖 Listing all active agents...".cyan().bold());
             println!("  - Agent query: {}", "Pending".yellow());
+            Ok(())
+        }
+        FederationCommands::Validate => {
+            println!("{}", "🔍 Validating federation configuration...".cyan().bold());
+            let status = Command::new("federation-validate").status()?;
+            if !status.success() {
+                anyhow::bail!("Federation validation failed");
+            }
+            Ok(())
+        }
+        FederationCommands::Dashboard { port } => {
+            println!(
+                "{}",
+                format!("📊 Opening federation dashboard on port {}...", port)
+                    .cyan()
+                    .bold()
+            );
+            let status = Command::new("federation-dashboard")
+                .arg("--port")
+                .arg(port.to_string())
+                .status()?;
+            if !status.success() {
+                anyhow::bail!("Failed to open federation dashboard");
+            }
             Ok(())
         }
     }

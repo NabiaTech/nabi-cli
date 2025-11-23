@@ -30,7 +30,7 @@ use commands::mcp;
 use commands::port;
 use commands::services;
 use commands::tmux;
-use cli::{AuraCommands, BackupCommands, ScanSourceType};
+use cli::{AuraCommands, BackupCommands, ScanSourceType, WatchCommands};
 use handlers::aura::handle_aura;
 use paths::NabiPaths;
 
@@ -154,9 +154,8 @@ enum Commands {
     },
     /// File watching and real-time classification
     Watch {
-        /// Path to watch
-        #[arg(value_name = "PATH")]
-        path: Option<String>,
+        #[command(subcommand)]
+        command: Option<WatchCommands>,
     },
     /// Organize files/directories with timestamp prefixes and topology categories
     ///
@@ -480,6 +479,14 @@ enum FederationCommands {
     Status,
     /// List all active agents in the federation
     Agents,
+    /// Validate federation configuration and state
+    Validate,
+    /// Open federation dashboard (Grafana visualization)
+    Dashboard {
+        /// Port to access dashboard
+        #[arg(long, default_value = "3000")]
+        port: u16,
+    },
 }
 
 #[derive(Subcommand)]
@@ -862,6 +869,27 @@ enum SelfCommands {
         /// Output format (markdown or json)
         #[arg(value_enum, default_value_t = SpecFormat::Markdown)]
         format: SpecFormat,
+    },
+    /// Comprehensive shell diagnostics (function, binary, aura, health)
+    #[command(
+        long_about = "Run comprehensive diagnostics on nabi shell integration.\n\n\
+                      Checks:\n  \
+                      • Nabi function definition in shell\n  \
+                      • Binary availability in PATH\n  \
+                      • Active aura configuration\n  \
+                      • System health check (unless --quick)\n\n\
+                      This helps debug nabi installation and shell integration issues."
+    )]
+    Diagnose {
+        /// Quick mode (skip health check)
+        #[arg(long)]
+        quick: bool,
+        /// Show full aura details
+        #[arg(long)]
+        aura: bool,
+        /// Output format (text or json)
+        #[arg(long, default_value = "text")]
+        format: String,
     },
 }
 
@@ -1687,7 +1715,7 @@ fn main() -> Result<()> {
             type_filter,
             query,
         } => handle_scan(path, tags, confidence, all, docs, type_filter, query),
-        Commands::Watch { path } => handle_watch(path),
+        Commands::Watch { command } => handlers::watch::handle_watch(command),
         Commands::Orgtime { path, category, files, preserve_times, dry_run } => {
             handle_orgtime(path, category, files, preserve_times, dry_run)
         }
@@ -1882,6 +1910,30 @@ fn handle_federation(command: FederationCommands) -> Result<()> {
         FederationCommands::Agents => {
             println!("{}", "🤖 Listing all active agents...".cyan().bold());
             println!("  - Agent query: {}", "Pending".yellow());
+            Ok(())
+        }
+        FederationCommands::Validate => {
+            println!("{}", "🔍 Validating federation configuration...".cyan().bold());
+            let status = std::process::Command::new("federation-validate").status()?;
+            if !status.success() {
+                anyhow::bail!("Federation validation failed");
+            }
+            Ok(())
+        }
+        FederationCommands::Dashboard { port } => {
+            println!(
+                "{}",
+                format!("📊 Opening federation dashboard on port {}...", port)
+                    .cyan()
+                    .bold()
+            );
+            let status = std::process::Command::new("federation-dashboard")
+                .arg("--port")
+                .arg(port.to_string())
+                .status()?;
+            if !status.success() {
+                anyhow::bail!("Failed to open federation dashboard");
+            }
             Ok(())
         }
     }
@@ -2763,6 +2815,13 @@ fn handle_self(command: SelfCommands) -> Result<()> {
             Ok(())
         }
         SelfCommands::Spec { format } => handle_spec(format),
+        SelfCommands::Diagnose { quick, aura, format } => {
+            handlers::self_manage::handle_self(crate::cli::SelfCommands::Diagnose {
+                quick,
+                aura,
+                format,
+            })
+        }
     }
 }
 
@@ -3403,16 +3462,7 @@ fn handle_scan_docs(query: &str, type_filter: Option<Vec<ScanSourceType>>) -> Re
     Ok(())
 }
 
-fn handle_watch(path: Option<String>) -> Result<()> {
-    println!("{}", "👁  Watching filesystem...".cyan().bold());
-    let mut args = vec!["watch".to_string()];
-    if let Some(p) = path {
-        args.push(p);
-    }
-
-    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    route_to_python_cli(&arg_refs)
-}
+// Removed: handle_watch - now in handlers/watch.rs with subcommand support
 
 fn handle_orgtime(path: String, category: Option<String>, files: bool, preserve_times: bool, dry_run: bool) -> Result<()> {
     crate::commands::orgtime::cmd_run(path, category, files, preserve_times, dry_run)
