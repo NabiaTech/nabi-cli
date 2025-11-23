@@ -1603,9 +1603,12 @@ struct ToolRegisterArgs {
     /// Override manifest status (defaults to "active")
     #[arg(long)]
     status: Option<String>,
-    /// Overwrite existing manifest file if it already exists
+    /// Show what would change if manifest exists (requires manual review)
     #[arg(long)]
     force: bool,
+    /// Actually overwrite existing customized manifests (DANGEROUS - bypasses safety checks)
+    #[arg(long)]
+    force_overwrite: bool,
     /// Mark capabilities: federation-aware tool
     #[arg(long)]
     federation_aware: bool,
@@ -2136,6 +2139,165 @@ fn handle_register(command: RegisterCommands) -> Result<()> {
     }
 }
 
+/// Detect if a TOML manifest has manual customization beyond auto-generated defaults
+fn detect_manual_customization(parsed: &toml::Value) -> bool {
+    // Check for signs of manual customization
+
+    // 1. Custom description (not auto-generated pattern)
+    if let Some(desc) = parsed.get("tool")
+        .and_then(|t| t.get("description"))
+        .and_then(|d| d.as_str())
+    {
+        if !desc.starts_with("Auto-registered tool manifest for") {
+            return true;
+        }
+    }
+
+    // 2. Has repository URL defined
+    if parsed.get("source")
+        .and_then(|s| s.get("repository"))
+        .and_then(|r| r.as_str())
+        .is_some()
+    {
+        return true;
+    }
+
+    // 3. Has aliases defined in commands
+    if let Some(aliases) = parsed.get("commands")
+        .and_then(|c| c.get("aliases"))
+        .and_then(|a| a.as_array())
+    {
+        if !aliases.is_empty() {
+            return true;
+        }
+    }
+
+    // 4. Has custom tags (beyond ["tool", "<runtime>"])
+    if let Some(tags) = parsed.get("tags")
+        .and_then(|t| t.get("tags"))
+        .and_then(|t| t.as_array())
+    {
+        if tags.len() > 2 {
+            return true;
+        }
+    }
+
+    // 5. Has federation_aware or other custom capabilities set to true
+    if let Some(caps) = parsed.get("capabilities").and_then(|c| c.as_table()) {
+        if caps.get("federation_aware").and_then(|v| v.as_bool()) == Some(true) {
+            return true;
+        }
+        if caps.get("xdg_compliant").and_then(|v| v.as_bool()) == Some(true) {
+            return true;
+        }
+        if caps.get("cross_platform").and_then(|v| v.as_bool()) == Some(true) {
+            return true;
+        }
+    }
+
+    // 6. Has custom execution path (not pointing to .config/nabi/tools/)
+    if let Some(exec) = parsed.get("runtime")
+        .and_then(|r| r.get("execution"))
+        .and_then(|e| e.as_str())
+    {
+        if !exec.contains(".config/nabi/tools/") {
+            return true;
+        }
+    }
+
+    // 7. Language is explicitly set (not "other")
+    if let Some(lang) = parsed.get("runtime")
+        .and_then(|r| r.get("language"))
+        .and_then(|l| l.as_str())
+    {
+        if lang != "other" {
+            return true;
+        }
+    }
+
+    false
+}
+
+/// Print what customizations would be lost if overwriting
+fn print_customization_warning(existing: &toml::Value) {
+    eprintln!("\n{}", "⚠️  WARNING: This manifest has manual customization!".yellow().bold());
+    eprintln!("{}", "   Overwriting will LOSE the following:".yellow());
+
+    // Show description
+    if let Some(desc) = existing.get("tool")
+        .and_then(|t| t.get("description"))
+        .and_then(|d| d.as_str())
+    {
+        if !desc.starts_with("Auto-registered") {
+            eprintln!("   • Description: \"{}\"", desc.dimmed());
+        }
+    }
+
+    // Show repository
+    if let Some(repo) = existing.get("source")
+        .and_then(|s| s.get("repository"))
+        .and_then(|r| r.as_str())
+    {
+        eprintln!("   • Repository: {}", repo.dimmed());
+    }
+
+    // Show aliases
+    if let Some(aliases) = existing.get("commands")
+        .and_then(|c| c.get("aliases"))
+        .and_then(|a| a.as_array())
+    {
+        if !aliases.is_empty() {
+            let aliases_str: Vec<String> = aliases.iter()
+                .filter_map(|a| a.as_str())
+                .map(|s| s.to_string())
+                .collect();
+            eprintln!("   • Aliases: [{}]", aliases_str.join(", ").dimmed());
+        }
+    }
+
+    // Show custom tags
+    if let Some(tags) = existing.get("tags")
+        .and_then(|t| t.get("tags"))
+        .and_then(|t| t.as_array())
+    {
+        let tags_str: Vec<String> = tags.iter()
+            .filter_map(|t| t.as_str())
+            .map(|s| s.to_string())
+            .collect();
+        eprintln!("   • Tags: [{}]", tags_str.join(", ").dimmed());
+    }
+
+    // Show capabilities
+    if let Some(caps) = existing.get("capabilities").and_then(|c| c.as_table()) {
+        let mut cap_list = Vec::new();
+        if caps.get("federation_aware").and_then(|v| v.as_bool()) == Some(true) {
+            cap_list.push("federation_aware");
+        }
+        if caps.get("xdg_compliant").and_then(|v| v.as_bool()) == Some(true) {
+            cap_list.push("xdg_compliant");
+        }
+        if caps.get("cross_platform").and_then(|v| v.as_bool()) == Some(true) {
+            cap_list.push("cross_platform");
+        }
+        if !cap_list.is_empty() {
+            eprintln!("   • Capabilities: {}", cap_list.join(", ").dimmed());
+        }
+    }
+
+    // Show execution path
+    if let Some(exec) = existing.get("runtime")
+        .and_then(|r| r.get("execution"))
+        .and_then(|e| e.as_str())
+    {
+        eprintln!("   • Execution: {}", exec.dimmed());
+    }
+
+    eprintln!();
+    eprintln!("{}", "   To proceed anyway: use --force-overwrite".yellow());
+    eprintln!("{}", "   To preserve settings: edit the TOML manually".yellow());
+    eprintln!();
+}
+
 fn register_tool(args: ToolRegisterArgs) -> Result<()> {
     println!("{}", "🛠  Registering tool manifest...".cyan().bold());
 
@@ -2326,11 +2488,45 @@ fn register_tool(args: ToolRegisterArgs) -> Result<()> {
 
     let manifest_path = tools_dir.join(format!("{}.toml", tool_id));
 
-    if manifest_path.exists() && !args.force {
-        anyhow::bail!(
-            "Manifest already exists at {} (use --force to overwrite)",
-            manifest_path.display()
-        );
+    // Safety check: prevent overwriting manually-customized manifests
+    if manifest_path.exists() {
+        if !args.force && !args.force_overwrite {
+            anyhow::bail!(
+                "Manifest already exists at {}\n   Use --force to see what would change",
+                manifest_path.display()
+            );
+        }
+
+        // Read and parse existing manifest
+        let existing_content = fs::read_to_string(&manifest_path)
+            .with_context(|| format!("Failed to read existing manifest at {}", manifest_path.display()))?;
+
+        let existing_parsed: toml::Value = toml::from_str(&existing_content)
+            .with_context(|| format!("Failed to parse existing manifest at {}", manifest_path.display()))?;
+
+        // Detect manual customization
+        let has_customization = detect_manual_customization(&existing_parsed);
+
+        if has_customization {
+            // Show what would be lost
+            print_customization_warning(&existing_parsed);
+
+            if !args.force_overwrite {
+                anyhow::bail!(
+                    "Refusing to overwrite customized manifest (safety check)\n   \
+                     Use --force-overwrite to proceed anyway (NOT RECOMMENDED)\n   \
+                     Or edit {} manually",
+                    manifest_path.display()
+                );
+            }
+
+            // force_overwrite is set - allow but warn
+            eprintln!("{}", "⚠️  Proceeding with --force-overwrite (customizations will be LOST)".red().bold());
+            eprintln!();
+        } else {
+            // No customization detected - safe to overwrite with --force
+            println!("{}", "ℹ️  Overwriting auto-generated manifest".cyan());
+        }
     }
 
     fs::write(&manifest_path, output)
