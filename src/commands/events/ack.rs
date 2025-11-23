@@ -254,7 +254,7 @@ fn load_event(event_id: &str) -> Result<FederationEvent> {
 }
 
 /// Load acknowledgment log for an event
-fn load_acknowledgment_log(event_id: &str) -> Result<Vec<Acknowledgment>> {
+pub fn load_acknowledgment_log(event_id: &str) -> Result<Vec<Acknowledgment>> {
     let ack_log_path = match get_ack_log_path(event_id) {
         Ok(path) => path,
         Err(_) => return Ok(Vec::new()),

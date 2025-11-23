@@ -138,6 +138,26 @@ pub enum EventsCommands {
         #[arg(long)]
         json: bool,
     },
+
+    /// Show event status with acknowledgments
+    Status {
+        /// Event ID to query
+        event_id: String,
+
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Show detailed event information
+    Show {
+        /// Event ID to query
+        event_id: String,
+
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
@@ -230,6 +250,8 @@ pub fn handle_events_commands(cmd: EventsCommands) -> Result<()> {
             let metadata_value = metadata.map(|s| serde_json::from_str(&s)).transpose()?;
             ack::execute_ack(&event_id, metadata_value, json)
         }
+        EventsCommands::Status { event_id, json } => handle_status(&event_id, json),
+        EventsCommands::Show { event_id, json } => handle_show(&event_id, json),
     }
 }
 
@@ -663,4 +685,78 @@ fn handle_stats(format: OutputFormat) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn handle_status(event_id: &str, json_output: bool) -> Result<()> {
+    let event = load_event_from_stream(event_id)?;
+    let acknowledgments = ack::load_acknowledgment_log(event_id).unwrap_or_default();
+
+    let status = serde_json::json!({
+        "event_id": event_id,
+        "event": event,
+        "acknowledgments": acknowledgments,
+        "handler_executions": [],
+        "causal_timeline": null,
+    });
+
+    if json_output {
+        println!("{}", serde_json::to_string_pretty(&status)?);
+    } else {
+        println!("Event: {}", event_id);
+        println!("Source: {}", event.source);
+        println!("Severity: {:?}", event.severity);
+        println!("Message: {}", event.message);
+        println!("\nAcknowledgments: {}", acknowledgments.len());
+        for ack in &acknowledgments {
+            println!("  {} - {} (session: {})", ack.ack_id, ack.agent_id, &ack.session_id[..8.min(ack.session_id.len())]);
+        }
+    }
+    Ok(())
+}
+
+fn handle_show(event_id: &str, json_output: bool) -> Result<()> {
+    let event = load_event_from_stream(event_id)?;
+
+    if json_output {
+        println!("{}", serde_json::to_string_pretty(&event)?);
+    } else {
+        println!("Event ID: {}", event.id);
+        println!("Source: {}", event.source);
+        println!("Severity: {:?}", event.severity);
+        println!("Message: {}", event.message);
+        println!("Timestamp: {}", event.timestamp);
+        if let Some(ref metadata) = event.metadata {
+            println!("\nMetadata:");
+            println!("{}", serde_json::to_string_pretty(metadata)?);
+        }
+    }
+    Ok(())
+}
+
+fn load_event_from_stream(event_id: &str) -> Result<Event> {
+    let store_path = get_event_store_path()?;
+    if !store_path.exists() {
+        anyhow::bail!("Event store not found");
+    }
+
+    let file = File::open(&store_path)?;
+    let reader = BufReader::new(file);
+
+    for line in reader.lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        let event: Event = match serde_json::from_str(&line) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+
+        if event.id == event_id {
+            return Ok(event);
+        }
+    }
+
+    anyhow::bail!("Event not found: {}", event_id)
 }
