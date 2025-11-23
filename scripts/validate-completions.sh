@@ -43,9 +43,15 @@ if [[ -f "$CONFIG_FILE" ]]; then
     PRIMARY_OUTPUT="${PRIMARY_OUTPUT//\~/$HOME}"
     FALLBACK_OUTPUT="${FALLBACK_OUTPUT//\~/$HOME}"
 else
-    # Fallback if config doesn't exist (shouldn't happen in normal use)
-    PRIMARY_OUTPUT="$HOME/.zsh/completions/_nabi"
-    FALLBACK_OUTPUT="${XDG_CACHE_HOME:-$HOME/.cache}/zsh/completions/_nabi"
+    # Fallback if config doesn't exist (platform-specific defaults)
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        PRIMARY_OUTPUT="$HOME/.zsh/completions/_nabi"
+        FALLBACK_OUTPUT="${XDG_CACHE_HOME:-$HOME/.cache}/zsh/completions/_nabi"
+    else
+        # Linux/WSL: XDG standard location first, then macOS fallback
+        PRIMARY_OUTPUT="${XDG_DATA_HOME:-$HOME/.local/share}/zsh/completions/_nabi"
+        FALLBACK_OUTPUT="$HOME/.zsh/completions/_nabi"
+    fi
 fi
 
 # Files
