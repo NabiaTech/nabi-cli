@@ -241,6 +241,11 @@ pub enum Commands {
         #[command(subcommand)]
         command: MigrateCommands,
     },
+    /// Validation operations (TOML syntax and schema validation)
+    Validate {
+        #[command(subcommand)]
+        command: ValidateCommands,
+    },
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
@@ -1162,6 +1167,33 @@ pub enum ToolCommands {
 pub enum RegisterCommands {
     /// Register a tool manifest (alias for `nabi tool register`)
     Tool(ToolRegisterArgs),
+}
+
+#[derive(Subcommand)]
+pub enum ValidateCommands {
+    /// Validate TOML file syntax and optionally against JSON schemas
+    ///
+    /// Validates TOML files for syntax errors and optionally against JSON schemas.
+    /// Supports single files or directory scanning with statistics.
+    ///
+    /// Examples:
+    ///   nabi validate toml ~/.config/nabi/tools/riff-cli.toml
+    ///   nabi validate toml ~/.config/nabi/tools/ --verbose
+    ///   nabi validate toml file.toml --schema ~/.config/nabi/governance/schemas/tool.schema.json
+    Toml {
+        /// TOML file or directory to validate
+        #[arg(value_name = "PATH")]
+        path: String,
+        /// Show verbose output (keys, sections, schema info)
+        #[arg(short, long)]
+        verbose: bool,
+        /// JSON schema file to validate against
+        #[arg(long, value_name = "SCHEMA")]
+        schema: Option<String>,
+        /// Disable uv and use python3 directly
+        #[arg(long)]
+        no_uv: bool,
+    },
 }
 
 #[derive(Clone, Debug, Args)]

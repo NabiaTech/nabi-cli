@@ -30,7 +30,7 @@ use commands::mcp;
 use commands::port;
 use commands::services;
 use commands::tmux;
-use cli::{AuraCommands, BackupCommands, ScanSourceType, WatchCommands};
+use cli::{AuraCommands, BackupCommands, ScanSourceType, ValidateCommands, WatchCommands};
 use handlers::aura::handle_aura;
 use paths::NabiPaths;
 
@@ -321,6 +321,11 @@ enum Commands {
     Migrate {
         #[command(subcommand)]
         command: cli::MigrateCommands,
+    },
+    /// Validation operations (TOML syntax and schema validation)
+    Validate {
+        #[command(subcommand)]
+        command: ValidateCommands,
     },
 }
 
@@ -1707,6 +1712,7 @@ fn main() -> Result<()> {
         Commands::Repo { command } => handle_repo(command),
         Commands::Analyze { command } => handle_analyze(command),
         Commands::Tool { command } => handle_tool(command),
+        Commands::Validate { command } => handle_validate(command),
         Commands::Register { command } => handle_register(command),
         Commands::Exec { tool, args } => handle_tool_exec(&tool, args),
         Commands::Scan {
@@ -2050,6 +2056,55 @@ fn handle_codegraph(command: CodegraphCommands) -> Result<()> {
         }
         CodegraphCommands::ShowHooks { templates: _templates } => {
             println!("⚠ Hook configuration display not yet implemented");
+            Ok(())
+        }
+    }
+}
+
+fn handle_validate(command: ValidateCommands) -> Result<()> {
+    match command {
+        ValidateCommands::Toml {
+            path,
+            verbose,
+            schema,
+            no_uv,
+        } => {
+            // Locate the validate_toml.sh script
+            let home = dirs::home_dir()
+                .ok_or_else(|| anyhow::anyhow!("Failed to get home directory"))?;
+            let script_path = home.join("nabia/tools/validators/toml/validate_toml.sh");
+
+            if !script_path.exists() {
+                anyhow::bail!(
+                    "TOML validator script not found at: {}",
+                    script_path.display()
+                );
+            }
+
+            // Build command arguments
+            let mut args = vec![path];
+            if verbose {
+                args.push("--verbose".to_string());
+            }
+            if let Some(schema_path) = schema {
+                args.push("--schema".to_string());
+                args.push(schema_path);
+            }
+            if no_uv {
+                args.push("--no-uv".to_string());
+            }
+
+            // Execute the script
+            let status = std::process::Command::new("bash")
+                .arg(&script_path)
+                .args(&args)
+                .status()
+                .with_context(|| format!("Failed to execute TOML validator: {}", script_path.display()))?;
+
+            if !status.success() {
+                std::process::exit(status.code().unwrap_or(1));
+            }
+
             Ok(())
         }
     }
