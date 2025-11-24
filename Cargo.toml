@@ -29,6 +29,7 @@ shellexpand = "3.1"
 thiserror = "2.0"
 jsonschema = "0.18"
 uuid = { version = "1.0", features = ["v4", "serde"] }
+rand = "0.8"
 
 [profile.release]
 lto = true
