@@ -3498,14 +3498,12 @@ fn handle_scan(
         if let Some(q) = query {
             return handle_scan_docs(&q, doc_filters, path.as_deref());
         }
-        // If path is provided with type filter but no query, scan path for matching files
+        // If path is provided (with or without type filter), scan path for matching files
         if let Some(p) = &path {
-            if type_filter.is_some() {
-                return handle_scan_path_with_types(p, doc_filters);
-            }
+            return handle_scan_path_with_types(p, doc_filters);
         }
         // Otherwise, require a query
-        anyhow::bail!("--docs requires either a search query (e.g., nabi scan --docs nats) or a path with --type-filter (e.g., nabi scan --docs --type-filter md ~/path)");
+        anyhow::bail!("--docs requires either a search query (e.g., nabi scan --docs nats) or a path (e.g., nabi scan --docs ~/path)");
     }
 
     if tags.is_some() || confidence.is_some() {
