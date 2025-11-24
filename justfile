@@ -1,29 +1,18 @@
 # Justfile for XDG-compliant nabi CLI builds
 # Usage: just <target> or just --list for all targets
-# Supports: macOS (with code signing), Linux, and WSL
 
 # Detect XDG paths - resolved via shell to handle env var defaults
 # These are used in bash recipes where ${HOME} etc. will be available
 # For justfile variables, we use safe defaults
 home := env_var('HOME')
-# Placeholder paths - actual values resolved in recipe with bash eval
-cache_target_dir_base := 'nabi/nabi-cli/target'
+# Build artifacts go directly to data/bin (backed up, on PATH)
+# Binary lands at: ~/.local/share/nabi/bin/release/nabi
 nabi_data_bin := home + '/.local/share/nabi/bin'
-
-# Platform detection (macOS vs Linux/WSL)
-_os := `uname -s`
-_is_macos := if _os == "Darwin" { "true" } else { "false" }
-
-# Completion directory (macOS: ~/.zsh/completions, Linux: ~/.local/share/zsh/completions)
-zsh_completion_dir := if _is_macos == "true" {
-    home + '/.zsh/completions'
-} else {
-    home + '/.local/share/zsh/completions'
-}
+zsh_completion_dir := home + '/.zsh/completions'
 zsh_completion_file := zsh_completion_dir + '/_nabi'
 
 # Code signing identity (override with NABI_SIGNING_IDENTITY env var)
-# Default: auto-detect Apple Development certificate (macOS only)
+# Default: auto-detect Apple Development certificate
 signing_identity := env_var_or_default('NABI_SIGNING_IDENTITY', 'auto')
 
 # Default target (show help)
@@ -34,28 +23,21 @@ default:
 @config:
     #!/bin/bash
     set -e
-    XDG_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}"
+    XDG_DATA="${XDG_DATA_HOME:-$HOME/.local/share}"
     mkdir -p .cargo
-    sed "s|\\\$XDG_CACHE_HOME|${XDG_CACHE}|g" .cargo/config.toml.template > .cargo/config.toml
-    echo "Generated .cargo/config.toml with target-dir: ${XDG_CACHE}/nabi/nabi-cli/target"
+    sed "s|\\\$XDG_DATA_HOME|${XDG_DATA}|g" .cargo/config.toml.template > .cargo/config.toml
+    echo "Generated .cargo/config.toml with target-dir: ${XDG_DATA}/nabi/bin"
 
 # Build with XDG paths
 @build: config
     cargo build --release
 
-# Sign binary with Apple Developer certificate (macOS only)
+# Sign binary with Apple Developer certificate (or adhoc)
 @sign:
     #!/bin/bash
     set -e
-
-    # Skip signing on Linux/WSL
-    if [ "$(uname -s)" != "Darwin" ]; then
-        echo "⏭️  Code signing skipped on Linux (not needed)"
-        exit 0
-    fi
-
-    XDG_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}"
-    BINARY="${XDG_CACHE}/nabi/nabi-cli/target/release/nabi"
+    XDG_DATA="${XDG_DATA_HOME:-$HOME/.local/share}"
+    BINARY="${XDG_DATA}/nabi/bin/release/nabi"
 
     if [ ! -f "${BINARY}" ]; then
         echo "❌ Binary not found: ${BINARY}"
@@ -115,74 +97,48 @@ default:
     just watch
 
 # Install without verbose output (for watch mode)
+# With new config, binary is already in data/bin/release - just symlink to nabi
 @install-quiet: completions sign
     #!/bin/bash
     set -e
-    XDG_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}"
     XDG_DATA="${XDG_DATA_HOME:-$HOME/.local/share}"
     NABI_BIN="${XDG_DATA}/nabi/bin"
-    BINARY="${XDG_CACHE}/nabi/nabi-cli/target/release/nabi"
-    mkdir -p "${NABI_BIN}"
-    cp "${BINARY}" "${NABI_BIN}/nabi"
-    chmod +x "${NABI_BIN}/nabi"
+    BINARY="${NABI_BIN}/release/nabi"
 
-    # Re-sign the installed binary on macOS only
-    if [ "$(uname -s)" = "Darwin" ]; then
-        IDENTITY=$(security find-identity -v -p codesigning | grep 'Apple Development' | head -1 | awk -F'"' '{print $2}')
-        if [ -n "$IDENTITY" ]; then
-            codesign --force --deep --sign "$IDENTITY" "${NABI_BIN}/nabi" >/dev/null 2>&1
-        else
-            codesign --force --deep --sign - "${NABI_BIN}/nabi" >/dev/null 2>&1
-        fi
-        xattr -cr "${NABI_BIN}/nabi" 2>/dev/null || true
-    fi
-
-    echo "✅ Installed nabi to ${NABI_BIN}/nabi"
+    # Create symlink from bin/nabi -> bin/release/nabi
+    ln -sf "${BINARY}" "${NABI_BIN}/nabi"
+    echo "✅ Linked nabi to ${NABI_BIN}/nabi"
 
 # Generate zsh completions from the freshly built binary with integrated dynamic enhancements
 @completions: build
     #!/bin/bash
     set -e
-    XDG_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}"
-    BINARY="${XDG_CACHE}/nabi/nabi-cli/target/release/nabi"
-
-    # Determine platform-specific sed syntax
-    OS=$(uname -s)
-    if [ "$OS" = "Darwin" ]; then
-        SED_I="sed -i ''"
-    else
-        SED_I="sed -i"
-    fi
-
-    # Use platform-appropriate completion directory
-    if [ "$OS" = "Darwin" ]; then
-        ZSH_COMP_DIR="$HOME/.zsh/completions"
-    else
-        ZSH_COMP_DIR="$HOME/.local/share/zsh/completions"
-    fi
+    XDG_DATA="${XDG_DATA_HOME:-$HOME/.local/share}"
+    BINARY="${XDG_DATA}/nabi/bin/release/nabi"
+    ZSH_COMP_DIR="$HOME/.zsh/completions"
     ZSH_COMP_FILE="${ZSH_COMP_DIR}/_nabi"
 
     mkdir -p "${ZSH_COMP_DIR}" .build
     "${BINARY}" completions zsh > .build/_nabi_static
-
+    
     # Post-process: Replace : or :_default with specific completion functions
     # This is the unified strategy - no overriding _nabi, just define specific functions
     echo "🔧 Post-processing completion file to add dynamic completion functions..."
-
+    
     # 1. Replace pane argument for send-prompt (no completion function, just :)
     # Match: '::pane -- ...:' and add completion function
-    $SED_I "s/'::pane -- \(.*\):'/'::pane -- \1:_nabi__tmux__send_prompt_pane'/" .build/_nabi_static
-
+    sed -i '' "s/'::pane -- \(.*\):'/'::pane -- \1:_nabi__tmux__send_prompt_pane'/" .build/_nabi_static
+    
     # 2. Replace service argument for port shift
-    $SED_I 's/:service -- Service name to migrate:_default/:service -- Service name to migrate:_nabi__port__shift_service/' .build/_nabi_static
-
+    sed -i '' 's/:service -- Service name to migrate:_default/:service -- Service name to migrate:_nabi__port__shift_service/' .build/_nabi_static
+    
     # 3 & 4. Replace tool arguments for both nabi exec and nabi tool exec
     # Use Python script to properly track tool section vs top-level exec
     python3 scripts/post-process-completions.py .build/_nabi_static
-
+    
     # 5. Replace event_id argument for events ack
-    $SED_I 's/:event_id -- Event ID to acknowledge:_default/:event_id -- Event ID to acknowledge:_nabi__events__ack_event_id/' .build/_nabi_static
-
+    sed -i '' 's/:event_id -- Event ID to acknowledge:_default/:event_id -- Event ID to acknowledge:_nabi__events__ack_event_id/' .build/_nabi_static
+    
     cp .build/_nabi_static "${ZSH_COMP_FILE}"
     echo '' >> "${ZSH_COMP_FILE}"
     echo '# Dynamic tmux completion enhancements (injected at build time)' >> "${ZSH_COMP_FILE}"
@@ -193,31 +149,16 @@ default:
     bash scripts/validate-completions.sh --verbose || { echo "❌ Completion validation failed!"; exit 1; }
     echo "✅ Completion composition validated"
 
-# Install to ~/.local/share/nabi/bin and refresh completions
+# Install to ~/.local/share/nabi/bin (binary already built there, just symlink)
 @install: completions sign
     #!/bin/bash
     set -e
     XDG_DATA="${XDG_DATA_HOME:-$HOME/.local/share}"
-    XDG_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}"
     NABI_BIN="${XDG_DATA}/nabi/bin"
-    BINARY="${XDG_CACHE}/nabi/nabi-cli/target/release/nabi"
-    mkdir -p "${NABI_BIN}"
-    cp "${BINARY}" "${NABI_BIN}/nabi"
-    chmod +x "${NABI_BIN}/nabi"
+    BINARY="${NABI_BIN}/release/nabi"
 
-    # Re-sign the installed binary on macOS only
-    if [ "$(uname -s)" = "Darwin" ]; then
-        echo "🔐 Signing installed binary..."
-        IDENTITY=$(security find-identity -v -p codesigning | grep 'Apple Development' | head -1 | awk -F'"' '{print $2}')
-        if [ -n "$IDENTITY" ]; then
-            codesign --force --deep --sign "$IDENTITY" "${NABI_BIN}/nabi"
-            echo "   ✓ Signed with: $IDENTITY"
-        else
-            echo "   ⚠️  No Apple Development certificate found, using adhoc"
-            codesign --force --deep --sign - "${NABI_BIN}/nabi"
-        fi
-        xattr -cr "${NABI_BIN}/nabi" 2>/dev/null || true
-    fi
+    # Create symlink from bin/nabi -> bin/release/nabi
+    ln -sf "${BINARY}" "${NABI_BIN}/nabi"
 
     # Verify the binary actually works
     echo "🧪 Verifying installation..."
@@ -226,10 +167,10 @@ default:
     else
         EXIT_CODE=$?
         echo "   ❌ Binary verification failed with exit code: $EXIT_CODE"
-        if [ "$EXIT_CODE" -eq 137 ] && [ "$(uname -s)" = "Darwin" ]; then
-            echo "   💡 Exit 137 = SIGKILL (macOS). Re-trying with adhoc signing..."
-            codesign --force --deep --sign - "${NABI_BIN}/nabi"
-            xattr -cr "${NABI_BIN}/nabi" 2>/dev/null || true
+        if [ $EXIT_CODE -eq 137 ]; then
+            echo "   💡 Exit 137 = SIGKILL. Re-trying with adhoc signing..."
+            codesign --force --deep --sign - "${BINARY}"
+            xattr -cr "${BINARY}" 2>/dev/null || true
             if "${NABI_BIN}/nabi" --version >/dev/null 2>&1; then
                 echo "   ✓ Recovery successful with adhoc signing"
             else
@@ -245,13 +186,14 @@ default:
     echo ""
     "${NABI_BIN}/nabi" --version
 
-# Clean build artifacts
+# Clean build artifacts (removes release/, debug/, deps/ from data/bin)
 @clean:
     #!/bin/bash
     set -e
-    XDG_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}"
+    XDG_DATA="${XDG_DATA_HOME:-$HOME/.local/share}"
     cargo clean
-    rm -rf "${XDG_CACHE}/nabi/nabi-cli/target"
+    rm -rf "${XDG_DATA}/nabi/bin/release" "${XDG_DATA}/nabi/bin/debug" "${XDG_DATA}/nabi/bin/deps" "${XDG_DATA}/nabi/bin/.fingerprint"
+    echo "🧹 Cleaned build artifacts from ${XDG_DATA}/nabi/bin"
 
 # Run tests
 @test:
@@ -292,30 +234,26 @@ default:
     fi
     echo "✓ Binary is executable"
 
-    # Check code signature (macOS only)
-    if [ "$(uname -s)" = "Darwin" ]; then
-        if codesign -dv "${NABI_BIN}" >/dev/null 2>&1; then
-            AUTHORITY=$(codesign -dv --verbose=2 "${NABI_BIN}" 2>&1 | grep "^Authority=" | head -1 | cut -d= -f2)
-            if [ -n "$AUTHORITY" ]; then
-                echo "✓ Code signed: $AUTHORITY"
-            else
-                echo "✓ Code signed (adhoc)"
-            fi
+    # Check code signature
+    if codesign -dv "${NABI_BIN}" >/dev/null 2>&1; then
+        AUTHORITY=$(codesign -dv --verbose=2 "${NABI_BIN}" 2>&1 | grep "^Authority=" | head -1 | cut -d= -f2)
+        if [ -n "$AUTHORITY" ]; then
+            echo "✓ Code signed: $AUTHORITY"
         else
-            echo "❌ Binary is not properly signed"
-            echo "   Run 'just install' to re-sign"
-            exit 1
-        fi
-
-        # Check for quarantine attributes
-        if xattr "${NABI_BIN}" 2>/dev/null | grep -q "com.apple.quarantine"; then
-            echo "⚠️  Quarantine attributes present (may cause issues)"
-            echo "   Run: xattr -cr ${NABI_BIN}"
-        else
-            echo "✓ No quarantine attributes"
+            echo "✓ Code signed (adhoc)"
         fi
     else
-        echo "✓ Code signing: not applicable on Linux"
+        echo "❌ Binary is not properly signed"
+        echo "   Run 'just install' to re-sign"
+        exit 1
+    fi
+
+    # Check for quarantine attributes
+    if xattr "${NABI_BIN}" 2>/dev/null | grep -q "com.apple.quarantine"; then
+        echo "⚠️  Quarantine attributes present (may cause issues)"
+        echo "   Run: xattr -cr ${NABI_BIN}"
+    else
+        echo "✓ No quarantine attributes"
     fi
 
     # Test execution

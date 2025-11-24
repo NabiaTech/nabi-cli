@@ -42,6 +42,29 @@ pub enum EventsCommands {
         stdin: bool,
     },
 
+    /// List events (TUI-friendly JSON output)
+    List {
+        /// Filter by event source(s), comma-separated
+        #[arg(long)]
+        source: Option<String>,
+
+        /// Filter by severity level(s), comma-separated
+        #[arg(long)]
+        severity: Option<String>,
+
+        /// Filter by acknowledged status
+        #[arg(long)]
+        acknowledged: Option<bool>,
+
+        /// Maximum number of events to return
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+
+        /// Always output as JSON (for TUI compatibility)
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Pull recent events from the event bus
     Pull {
         /// How far back to look (e.g., "1h", "24h", "7d")
@@ -115,6 +138,26 @@ pub enum EventsCommands {
         #[arg(long)]
         json: bool,
     },
+
+    /// Show event status with acknowledgments
+    Status {
+        /// Event ID to query
+        event_id: String,
+
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Show detailed event information
+    Show {
+        /// Event ID to query
+        event_id: String,
+
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
@@ -177,6 +220,13 @@ pub fn handle_events_commands(cmd: EventsCommands) -> Result<()> {
             timestamp,
             stdin,
         } => handle_publish(source, severity, message, metadata, timestamp, stdin),
+        EventsCommands::List {
+            source,
+            severity,
+            acknowledged,
+            limit,
+            json,
+        } => handle_list(source, severity, acknowledged, limit, json),
         EventsCommands::Pull {
             since,
             limit,
@@ -200,6 +250,8 @@ pub fn handle_events_commands(cmd: EventsCommands) -> Result<()> {
             let metadata_value = metadata.map(|s| serde_json::from_str(&s)).transpose()?;
             ack::execute_ack(&event_id, metadata_value, json)
         }
+        EventsCommands::Status { event_id, json } => handle_status(&event_id, json),
+        EventsCommands::Show { event_id, json } => handle_show(&event_id, json),
     }
 }
 
@@ -283,6 +335,73 @@ fn handle_publish(
         "{}✓{} Event published: [{}] {} (ID: {})",
         "\x1b[32m", "\x1b[0m", event.source, event.message, event.id
     );
+
+    Ok(())
+}
+
+fn handle_list(
+    source_filter: Option<String>,
+    severity_filter: Option<String>,
+    _acknowledged_filter: Option<bool>,
+    limit: usize,
+    _json: bool, // Always JSON for TUI
+) -> Result<()> {
+    let store_path = get_event_store_path()?;
+
+    if !store_path.exists() {
+        // Return empty array for TUI
+        println!("{{\"events\": []}}");
+        return Ok(());
+    }
+
+    let file = File::open(&store_path).context("Failed to open event store")?;
+    let reader = BufReader::new(file);
+
+    let source_filters: Option<Vec<String>> =
+        source_filter.map(|s| s.split(',').map(|x| x.trim().to_string()).collect());
+
+    let severity_filters: Option<Vec<String>> =
+        severity_filter.map(|s| s.split(',').map(|x| x.trim().to_lowercase()).collect());
+
+    let mut events: Vec<Event> = Vec::new();
+
+    for line in reader.lines() {
+        let line = line?;
+        let event: Event = match serde_json::from_str(&line) {
+            Ok(e) => e,
+            Err(_) => continue, // Skip malformed lines
+        };
+
+        // Apply filters
+        if let Some(ref sources) = source_filters {
+            if !sources.contains(&event.source) {
+                continue;
+            }
+        }
+
+        if let Some(ref severities) = severity_filters {
+            let severity_str = format!("{:?}", event.severity).to_lowercase();
+            if !severities.contains(&severity_str) {
+                continue;
+            }
+        }
+
+        events.push(event);
+
+        if events.len() >= limit {
+            break;
+        }
+    }
+
+    // Reverse to show newest first
+    events.reverse();
+
+    // Output in TUI-expected format
+    let output = serde_json::json!({
+        "events": events
+    });
+
+    println!("{}", serde_json::to_string_pretty(&output)?);
 
     Ok(())
 }
@@ -566,4 +685,78 @@ fn handle_stats(format: OutputFormat) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn handle_status(event_id: &str, json_output: bool) -> Result<()> {
+    let event = load_event_from_stream(event_id)?;
+    let acknowledgments = ack::load_acknowledgment_log(event_id).unwrap_or_default();
+
+    let status = serde_json::json!({
+        "event_id": event_id,
+        "event": event,
+        "acknowledgments": acknowledgments,
+        "handler_executions": [],
+        "causal_timeline": null,
+    });
+
+    if json_output {
+        println!("{}", serde_json::to_string_pretty(&status)?);
+    } else {
+        println!("Event: {}", event_id);
+        println!("Source: {}", event.source);
+        println!("Severity: {:?}", event.severity);
+        println!("Message: {}", event.message);
+        println!("\nAcknowledgments: {}", acknowledgments.len());
+        for ack in &acknowledgments {
+            println!("  {} - {} (session: {})", ack.ack_id, ack.agent_id, &ack.session_id[..8.min(ack.session_id.len())]);
+        }
+    }
+    Ok(())
+}
+
+fn handle_show(event_id: &str, json_output: bool) -> Result<()> {
+    let event = load_event_from_stream(event_id)?;
+
+    if json_output {
+        println!("{}", serde_json::to_string_pretty(&event)?);
+    } else {
+        println!("Event ID: {}", event.id);
+        println!("Source: {}", event.source);
+        println!("Severity: {:?}", event.severity);
+        println!("Message: {}", event.message);
+        println!("Timestamp: {}", event.timestamp);
+        if let Some(ref metadata) = event.metadata {
+            println!("\nMetadata:");
+            println!("{}", serde_json::to_string_pretty(metadata)?);
+        }
+    }
+    Ok(())
+}
+
+fn load_event_from_stream(event_id: &str) -> Result<Event> {
+    let store_path = get_event_store_path()?;
+    if !store_path.exists() {
+        anyhow::bail!("Event store not found");
+    }
+
+    let file = File::open(&store_path)?;
+    let reader = BufReader::new(file);
+
+    for line in reader.lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        let event: Event = match serde_json::from_str(&line) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+
+        if event.id == event_id {
+            return Ok(event);
+        }
+    }
+
+    anyhow::bail!("Event not found: {}", event_id)
 }

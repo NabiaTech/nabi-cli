@@ -112,9 +112,8 @@ pub enum Commands {
     },
     /// File watching and real-time classification
     Watch {
-        /// Path to watch
-        #[arg(value_name = "PATH")]
-        path: Option<String>,
+        #[command(subcommand)]
+        command: Option<WatchCommands>,
     },
     /// Organize files/directories with timestamp prefixes and topology categories
     ///
@@ -242,6 +241,11 @@ pub enum Commands {
         #[command(subcommand)]
         command: MigrateCommands,
     },
+    /// Validation operations (TOML syntax and schema validation)
+    Validate {
+        #[command(subcommand)]
+        command: ValidateCommands,
+    },
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
@@ -257,6 +261,24 @@ pub enum ScanSourceType {
     Json,
     #[value(name = "yaml", alias = "yml", help = "YAML files (*.yaml, *.yml)")]
     Yaml,
+}
+
+#[derive(Subcommand)]
+pub enum WatchCommands {
+    /// Watch federation events (routes to watch-events tool)
+    Events,
+    /// Watch federation coordination (routes to fed-live-watch tool)
+    Federation,
+    /// Watch tmp directory (routes to nabi-tmp-watcher tool)
+    Tmp,
+    /// Watch schema changes (routes to schema-watch.sh tool)
+    Schema,
+    /// Watch filesystem path for changes
+    Path {
+        /// Path to watch
+        #[arg(value_name = "PATH")]
+        path: String,
+    },
 }
 
 impl ScanSourceType {
@@ -373,6 +395,14 @@ pub enum FederationCommands {
     Status,
     /// List all active agents in the federation
     Agents,
+    /// Validate federation configuration and state
+    Validate,
+    /// Open federation dashboard (Grafana visualization)
+    Dashboard {
+        /// Port to access dashboard
+        #[arg(long, default_value = "3000")]
+        port: u16,
+    },
 }
 
 #[derive(Subcommand)]
@@ -624,6 +654,18 @@ pub enum SelfCommands {
         /// Output format (markdown or json)
         #[arg(value_enum, default_value_t = SpecFormat::Markdown)]
         format: SpecFormat,
+    },
+    /// Comprehensive shell diagnostics (function, binary, aura, health)
+    Diagnose {
+        /// Quick mode (skip health check)
+        #[arg(long)]
+        quick: bool,
+        /// Show aura details
+        #[arg(long)]
+        aura: bool,
+        /// Output format (text or json)
+        #[arg(long, default_value = "text")]
+        format: String,
     },
 }
 
@@ -1125,6 +1167,33 @@ pub enum ToolCommands {
 pub enum RegisterCommands {
     /// Register a tool manifest (alias for `nabi tool register`)
     Tool(ToolRegisterArgs),
+}
+
+#[derive(Subcommand)]
+pub enum ValidateCommands {
+    /// Validate TOML file syntax and optionally against JSON schemas
+    ///
+    /// Validates TOML files for syntax errors and optionally against JSON schemas.
+    /// Supports single files or directory scanning with statistics.
+    ///
+    /// Examples:
+    ///   nabi validate toml ~/.config/nabi/tools/riff-cli.toml
+    ///   nabi validate toml ~/.config/nabi/tools/ --verbose
+    ///   nabi validate toml file.toml --schema ~/.config/nabi/governance/schemas/tool.schema.json
+    Toml {
+        /// TOML file or directory to validate
+        #[arg(value_name = "PATH")]
+        path: String,
+        /// Show verbose output (keys, sections, schema info)
+        #[arg(short, long)]
+        verbose: bool,
+        /// JSON schema file to validate against
+        #[arg(long, value_name = "SCHEMA")]
+        schema: Option<String>,
+        /// Disable uv and use python3 directly
+        #[arg(long)]
+        no_uv: bool,
+    },
 }
 
 #[derive(Clone, Debug, Args)]

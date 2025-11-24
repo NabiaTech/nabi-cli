@@ -30,7 +30,7 @@ use commands::mcp;
 use commands::port;
 use commands::services;
 use commands::tmux;
-use cli::{AuraCommands, BackupCommands, ScanSourceType};
+use cli::{AuraCommands, BackupCommands, ScanSourceType, ValidateCommands, WatchCommands};
 use handlers::aura::handle_aura;
 use paths::NabiPaths;
 
@@ -154,9 +154,8 @@ enum Commands {
     },
     /// File watching and real-time classification
     Watch {
-        /// Path to watch
-        #[arg(value_name = "PATH")]
-        path: Option<String>,
+        #[command(subcommand)]
+        command: Option<WatchCommands>,
     },
     /// Organize files/directories with timestamp prefixes and topology categories
     ///
@@ -323,6 +322,11 @@ enum Commands {
         #[command(subcommand)]
         command: cli::MigrateCommands,
     },
+    /// Validation operations (TOML syntax and schema validation)
+    Validate {
+        #[command(subcommand)]
+        command: ValidateCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -480,6 +484,14 @@ enum FederationCommands {
     Status,
     /// List all active agents in the federation
     Agents,
+    /// Validate federation configuration and state
+    Validate,
+    /// Open federation dashboard (Grafana visualization)
+    Dashboard {
+        /// Port to access dashboard
+        #[arg(long, default_value = "3000")]
+        port: u16,
+    },
 }
 
 #[derive(Subcommand)]
@@ -862,6 +874,27 @@ enum SelfCommands {
         /// Output format (markdown or json)
         #[arg(value_enum, default_value_t = SpecFormat::Markdown)]
         format: SpecFormat,
+    },
+    /// Comprehensive shell diagnostics (function, binary, aura, health)
+    #[command(
+        long_about = "Run comprehensive diagnostics on nabi shell integration.\n\n\
+                      Checks:\n  \
+                      • Nabi function definition in shell\n  \
+                      • Binary availability in PATH\n  \
+                      • Active aura configuration\n  \
+                      • System health check (unless --quick)\n\n\
+                      This helps debug nabi installation and shell integration issues."
+    )]
+    Diagnose {
+        /// Quick mode (skip health check)
+        #[arg(long)]
+        quick: bool,
+        /// Show full aura details
+        #[arg(long)]
+        aura: bool,
+        /// Output format (text or json)
+        #[arg(long, default_value = "text")]
+        format: String,
     },
 }
 
@@ -1575,9 +1608,12 @@ struct ToolRegisterArgs {
     /// Override manifest status (defaults to "active")
     #[arg(long)]
     status: Option<String>,
-    /// Overwrite existing manifest file if it already exists
+    /// Show what would change if manifest exists (requires manual review)
     #[arg(long)]
     force: bool,
+    /// Actually overwrite existing customized manifests (DANGEROUS - bypasses safety checks)
+    #[arg(long)]
+    force_overwrite: bool,
     /// Mark capabilities: federation-aware tool
     #[arg(long)]
     federation_aware: bool,
@@ -1676,6 +1712,7 @@ fn main() -> Result<()> {
         Commands::Repo { command } => handle_repo(command),
         Commands::Analyze { command } => handle_analyze(command),
         Commands::Tool { command } => handle_tool(command),
+        Commands::Validate { command } => handle_validate(command),
         Commands::Register { command } => handle_register(command),
         Commands::Exec { tool, args } => handle_tool_exec(&tool, args),
         Commands::Scan {
@@ -1687,7 +1724,7 @@ fn main() -> Result<()> {
             type_filter,
             query,
         } => handle_scan(path, tags, confidence, all, docs, type_filter, query),
-        Commands::Watch { path } => handle_watch(path),
+        Commands::Watch { command } => handlers::watch::handle_watch(command),
         Commands::Orgtime { path, category, files, preserve_times, dry_run } => {
             handle_orgtime(path, category, files, preserve_times, dry_run)
         }
@@ -1884,6 +1921,30 @@ fn handle_federation(command: FederationCommands) -> Result<()> {
             println!("  - Agent query: {}", "Pending".yellow());
             Ok(())
         }
+        FederationCommands::Validate => {
+            println!("{}", "🔍 Validating federation configuration...".cyan().bold());
+            let status = std::process::Command::new("federation-validate").status()?;
+            if !status.success() {
+                anyhow::bail!("Federation validation failed");
+            }
+            Ok(())
+        }
+        FederationCommands::Dashboard { port } => {
+            println!(
+                "{}",
+                format!("📊 Opening federation dashboard on port {}...", port)
+                    .cyan()
+                    .bold()
+            );
+            let status = std::process::Command::new("federation-dashboard")
+                .arg("--port")
+                .arg(port.to_string())
+                .status()?;
+            if !status.success() {
+                anyhow::bail!("Failed to open federation dashboard");
+            }
+            Ok(())
+        }
     }
 }
 
@@ -2000,6 +2061,55 @@ fn handle_codegraph(command: CodegraphCommands) -> Result<()> {
     }
 }
 
+fn handle_validate(command: ValidateCommands) -> Result<()> {
+    match command {
+        ValidateCommands::Toml {
+            path,
+            verbose,
+            schema,
+            no_uv,
+        } => {
+            // Locate the validate_toml.sh script
+            let home = dirs::home_dir()
+                .ok_or_else(|| anyhow::anyhow!("Failed to get home directory"))?;
+            let script_path = home.join("nabia/tools/validators/toml/validate_toml.sh");
+
+            if !script_path.exists() {
+                anyhow::bail!(
+                    "TOML validator script not found at: {}",
+                    script_path.display()
+                );
+            }
+
+            // Build command arguments
+            let mut args = vec![path];
+            if verbose {
+                args.push("--verbose".to_string());
+            }
+            if let Some(schema_path) = schema {
+                args.push("--schema".to_string());
+                args.push(schema_path);
+            }
+            if no_uv {
+                args.push("--no-uv".to_string());
+            }
+
+            // Execute the script
+            let status = std::process::Command::new("bash")
+                .arg(&script_path)
+                .args(&args)
+                .status()
+                .with_context(|| format!("Failed to execute TOML validator: {}", script_path.display()))?;
+
+            if !status.success() {
+                std::process::exit(status.code().unwrap_or(1));
+            }
+
+            Ok(())
+        }
+    }
+}
+
 fn handle_tool(command: ToolCommands) -> Result<()> {
     match command {
         ToolCommands::Register(args) => register_tool(args),
@@ -2082,6 +2192,165 @@ fn handle_register(command: RegisterCommands) -> Result<()> {
     match command {
         RegisterCommands::Tool(args) => register_tool(args),
     }
+}
+
+/// Detect if a TOML manifest has manual customization beyond auto-generated defaults
+fn detect_manual_customization(parsed: &toml::Value) -> bool {
+    // Check for signs of manual customization
+
+    // 1. Custom description (not auto-generated pattern)
+    if let Some(desc) = parsed.get("tool")
+        .and_then(|t| t.get("description"))
+        .and_then(|d| d.as_str())
+    {
+        if !desc.starts_with("Auto-registered tool manifest for") {
+            return true;
+        }
+    }
+
+    // 2. Has repository URL defined
+    if parsed.get("source")
+        .and_then(|s| s.get("repository"))
+        .and_then(|r| r.as_str())
+        .is_some()
+    {
+        return true;
+    }
+
+    // 3. Has aliases defined in commands
+    if let Some(aliases) = parsed.get("commands")
+        .and_then(|c| c.get("aliases"))
+        .and_then(|a| a.as_array())
+    {
+        if !aliases.is_empty() {
+            return true;
+        }
+    }
+
+    // 4. Has custom tags (beyond ["tool", "<runtime>"])
+    if let Some(tags) = parsed.get("tags")
+        .and_then(|t| t.get("tags"))
+        .and_then(|t| t.as_array())
+    {
+        if tags.len() > 2 {
+            return true;
+        }
+    }
+
+    // 5. Has federation_aware or other custom capabilities set to true
+    if let Some(caps) = parsed.get("capabilities").and_then(|c| c.as_table()) {
+        if caps.get("federation_aware").and_then(|v| v.as_bool()) == Some(true) {
+            return true;
+        }
+        if caps.get("xdg_compliant").and_then(|v| v.as_bool()) == Some(true) {
+            return true;
+        }
+        if caps.get("cross_platform").and_then(|v| v.as_bool()) == Some(true) {
+            return true;
+        }
+    }
+
+    // 6. Has custom execution path (not pointing to .config/nabi/tools/)
+    if let Some(exec) = parsed.get("runtime")
+        .and_then(|r| r.get("execution"))
+        .and_then(|e| e.as_str())
+    {
+        if !exec.contains(".config/nabi/tools/") {
+            return true;
+        }
+    }
+
+    // 7. Language is explicitly set (not "other")
+    if let Some(lang) = parsed.get("runtime")
+        .and_then(|r| r.get("language"))
+        .and_then(|l| l.as_str())
+    {
+        if lang != "other" {
+            return true;
+        }
+    }
+
+    false
+}
+
+/// Print what customizations would be lost if overwriting
+fn print_customization_warning(existing: &toml::Value) {
+    eprintln!("\n{}", "⚠️  WARNING: This manifest has manual customization!".yellow().bold());
+    eprintln!("{}", "   Overwriting will LOSE the following:".yellow());
+
+    // Show description
+    if let Some(desc) = existing.get("tool")
+        .and_then(|t| t.get("description"))
+        .and_then(|d| d.as_str())
+    {
+        if !desc.starts_with("Auto-registered") {
+            eprintln!("   • Description: \"{}\"", desc.dimmed());
+        }
+    }
+
+    // Show repository
+    if let Some(repo) = existing.get("source")
+        .and_then(|s| s.get("repository"))
+        .and_then(|r| r.as_str())
+    {
+        eprintln!("   • Repository: {}", repo.dimmed());
+    }
+
+    // Show aliases
+    if let Some(aliases) = existing.get("commands")
+        .and_then(|c| c.get("aliases"))
+        .and_then(|a| a.as_array())
+    {
+        if !aliases.is_empty() {
+            let aliases_str: Vec<String> = aliases.iter()
+                .filter_map(|a| a.as_str())
+                .map(|s| s.to_string())
+                .collect();
+            eprintln!("   • Aliases: [{}]", aliases_str.join(", ").dimmed());
+        }
+    }
+
+    // Show custom tags
+    if let Some(tags) = existing.get("tags")
+        .and_then(|t| t.get("tags"))
+        .and_then(|t| t.as_array())
+    {
+        let tags_str: Vec<String> = tags.iter()
+            .filter_map(|t| t.as_str())
+            .map(|s| s.to_string())
+            .collect();
+        eprintln!("   • Tags: [{}]", tags_str.join(", ").dimmed());
+    }
+
+    // Show capabilities
+    if let Some(caps) = existing.get("capabilities").and_then(|c| c.as_table()) {
+        let mut cap_list = Vec::new();
+        if caps.get("federation_aware").and_then(|v| v.as_bool()) == Some(true) {
+            cap_list.push("federation_aware");
+        }
+        if caps.get("xdg_compliant").and_then(|v| v.as_bool()) == Some(true) {
+            cap_list.push("xdg_compliant");
+        }
+        if caps.get("cross_platform").and_then(|v| v.as_bool()) == Some(true) {
+            cap_list.push("cross_platform");
+        }
+        if !cap_list.is_empty() {
+            eprintln!("   • Capabilities: {}", cap_list.join(", ").dimmed());
+        }
+    }
+
+    // Show execution path
+    if let Some(exec) = existing.get("runtime")
+        .and_then(|r| r.get("execution"))
+        .and_then(|e| e.as_str())
+    {
+        eprintln!("   • Execution: {}", exec.dimmed());
+    }
+
+    eprintln!();
+    eprintln!("{}", "   To proceed anyway: use --force-overwrite".yellow());
+    eprintln!("{}", "   To preserve settings: edit the TOML manually".yellow());
+    eprintln!();
 }
 
 fn register_tool(args: ToolRegisterArgs) -> Result<()> {
@@ -2274,11 +2543,45 @@ fn register_tool(args: ToolRegisterArgs) -> Result<()> {
 
     let manifest_path = tools_dir.join(format!("{}.toml", tool_id));
 
-    if manifest_path.exists() && !args.force {
-        anyhow::bail!(
-            "Manifest already exists at {} (use --force to overwrite)",
-            manifest_path.display()
-        );
+    // Safety check: prevent overwriting manually-customized manifests
+    if manifest_path.exists() {
+        if !args.force && !args.force_overwrite {
+            anyhow::bail!(
+                "Manifest already exists at {}\n   Use --force to see what would change",
+                manifest_path.display()
+            );
+        }
+
+        // Read and parse existing manifest
+        let existing_content = fs::read_to_string(&manifest_path)
+            .with_context(|| format!("Failed to read existing manifest at {}", manifest_path.display()))?;
+
+        let existing_parsed: toml::Value = toml::from_str(&existing_content)
+            .with_context(|| format!("Failed to parse existing manifest at {}", manifest_path.display()))?;
+
+        // Detect manual customization
+        let has_customization = detect_manual_customization(&existing_parsed);
+
+        if has_customization {
+            // Show what would be lost
+            print_customization_warning(&existing_parsed);
+
+            if !args.force_overwrite {
+                anyhow::bail!(
+                    "Refusing to overwrite customized manifest (safety check)\n   \
+                     Use --force-overwrite to proceed anyway (NOT RECOMMENDED)\n   \
+                     Or edit {} manually",
+                    manifest_path.display()
+                );
+            }
+
+            // force_overwrite is set - allow but warn
+            eprintln!("{}", "⚠️  Proceeding with --force-overwrite (customizations will be LOST)".red().bold());
+            eprintln!();
+        } else {
+            // No customization detected - safe to overwrite with --force
+            println!("{}", "ℹ️  Overwriting auto-generated manifest".cyan());
+        }
     }
 
     fs::write(&manifest_path, output)
@@ -2763,6 +3066,13 @@ fn handle_self(command: SelfCommands) -> Result<()> {
             Ok(())
         }
         SelfCommands::Spec { format } => handle_spec(format),
+        SelfCommands::Diagnose { quick, aura, format } => {
+            handlers::self_manage::handle_self(crate::cli::SelfCommands::Diagnose {
+                quick,
+                aura,
+                format,
+            })
+        }
     }
 }
 
@@ -3181,13 +3491,19 @@ fn handle_scan(
         return handle_scan_all();
     }
 
-    // If --docs flag is set, search documentation with ripgrep
+    // If --docs flag is set, handle documentation scanning
     if docs {
         let doc_filters = type_filter.clone();
-        match query {
-            Some(q) => return handle_scan_docs(&q, doc_filters),
-            None => anyhow::bail!("--docs requires a search query (e.g., nabi scan --docs nats)"),
+        // If query is provided, use ripgrep search
+        if let Some(q) = query {
+            return handle_scan_docs(&q, doc_filters, path.as_deref());
         }
+        // If path is provided (with or without type filter), scan path for matching files
+        if let Some(p) = &path {
+            return handle_scan_path_with_types(p, doc_filters);
+        }
+        // Otherwise, require a query
+        anyhow::bail!("--docs requires either a search query (e.g., nabi scan --docs nats) or a path (e.g., nabi scan --docs ~/path)");
     }
 
     if tags.is_some() || confidence.is_some() {
@@ -3328,20 +3644,24 @@ fn handle_scan_all() -> Result<()> {
     Ok(())
 }
 
-fn handle_scan_docs(query: &str, type_filter: Option<Vec<ScanSourceType>>) -> Result<()> {
+fn handle_scan_docs(query: &str, type_filter: Option<Vec<ScanSourceType>>, path: Option<&str>) -> Result<()> {
     println!(
         "{}",
         format!("📚 Searching docs for: '{}'", query).cyan().bold()
     );
 
-    // Get docs directory
-    let home = std::env::var("HOME").context("Could not determine HOME directory")?;
-    let docs_dir = format!("{}/docs", home);
+    // Determine target directory: use provided path or default to ~/docs
+    let docs_dir = if let Some(p) = path {
+        expand_home(p)?.to_string_lossy().to_string()
+    } else {
+        let home = std::env::var("HOME").context("Could not determine HOME directory")?;
+        format!("{}/docs", home)
+    };
 
     // Verify docs directory exists
     if !std::path::Path::new(&docs_dir).exists() {
         anyhow::bail!(
-            "Documentation directory not found: {}. Expected ~/docs to exist.",
+            "Documentation directory not found: {}",
             docs_dir
         );
     }
@@ -3403,16 +3723,81 @@ fn handle_scan_docs(query: &str, type_filter: Option<Vec<ScanSourceType>>) -> Re
     Ok(())
 }
 
-fn handle_watch(path: Option<String>) -> Result<()> {
-    println!("{}", "👁  Watching filesystem...".cyan().bold());
-    let mut args = vec!["watch".to_string()];
-    if let Some(p) = path {
-        args.push(p);
+fn handle_scan_path_with_types(path: &str, type_filter: Option<Vec<ScanSourceType>>) -> Result<()> {
+    // Expand tilde in path
+    let expanded_path = expand_home(path)?;
+
+    // Verify path exists
+    if !expanded_path.exists() {
+        anyhow::bail!("Path not found: {}", path);
     }
 
-    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    route_to_python_cli(&arg_refs)
+    println!(
+        "{}",
+        format!("📚 Scanning {} for matching files", expanded_path.display()).cyan().bold()
+    );
+
+    // Build find command
+    let mut cmd = std::process::Command::new("find");
+    cmd.arg("-P") // Don't follow symlinks
+        .arg(&expanded_path)
+        .arg("-type")
+        .arg("f");
+
+    // Apply type filtering if specified
+    if let Some(types) = type_filter {
+        if !types.is_empty() {
+            // Build -name pattern: -name "*.md" -o -name "*.txt" etc.
+            let mut name_args: Vec<String> = Vec::new();
+            for (i, ext) in types.iter().enumerate() {
+                if i > 0 {
+                    name_args.push("-o".to_string());
+                }
+                name_args.push("-name".to_string());
+                name_args.push(format!("*.{}", ext.as_extension()));
+            }
+            // Convert Vec<String> to Vec<&str> for args()
+            let name_args_refs: Vec<&str> = name_args.iter().map(|s| s.as_str()).collect();
+            cmd.arg("(").args(&name_args_refs).arg(")");
+        }
+    }
+
+    // Exclude common unwanted directories and files
+    cmd.args(&[
+        "!", "-path", "*/.git/*",
+        "!", "-path", "*/__pycache__/*",
+        "!", "-path", "*/node_modules/*",
+        "!", "-path", "*/target/*",
+        "!", "-name", "*.pyc",
+        "!", "-name", ".DS_Store",
+    ]);
+
+    println!();
+
+    // Execute find
+    let output = cmd
+        .output()
+        .context("Failed to execute find command")?;
+
+    // Print stdout
+    if !output.stdout.is_empty() {
+        print!("{}", String::from_utf8_lossy(&output.stdout));
+    } else {
+        println!(
+            "{}",
+            format!("No matching files found in {}", expanded_path.display()).yellow()
+        );
+    }
+
+    // Print stderr if present (but don't fail on it)
+    if !output.stderr.is_empty() {
+        eprintln!("{}", String::from_utf8_lossy(&output.stderr));
+    }
+
+    Ok(())
 }
+
+// Removed: handle_watch - now in handlers/watch.rs with subcommand support
 
 fn handle_orgtime(path: String, category: Option<String>, files: bool, preserve_times: bool, dry_run: bool) -> Result<()> {
     crate::commands::orgtime::cmd_run(path, category, files, preserve_times, dry_run)
@@ -3535,8 +3920,10 @@ fn handle_record(command: RecordCommands) -> Result<()> {
 #[derive(Debug, Deserialize)]
 struct KernelConfig {
     kernel_venv: String,
-    daemon_script: String,
-    version: String,
+    #[serde(default)]
+    daemon_script: Option<String>,
+    #[serde(default)]
+    version: Option<String>,
 }
 
 /// Expand ~ to home directory
