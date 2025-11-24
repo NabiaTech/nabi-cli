@@ -3491,13 +3491,19 @@ fn handle_scan(
         return handle_scan_all();
     }
 
-    // If --docs flag is set, search documentation with ripgrep
+    // If --docs flag is set, handle documentation scanning
     if docs {
         let doc_filters = type_filter.clone();
-        match query {
-            Some(q) => return handle_scan_docs(&q, doc_filters),
-            None => anyhow::bail!("--docs requires a search query (e.g., nabi scan --docs nats)"),
+        // If query is provided, use ripgrep search
+        if let Some(q) = query {
+            return handle_scan_docs(&q, doc_filters, path.as_deref());
         }
+        // If path is provided (with or without type filter), scan path for matching files
+        if let Some(p) = &path {
+            return handle_scan_path_with_types(p, doc_filters);
+        }
+        // Otherwise, require a query
+        anyhow::bail!("--docs requires either a search query (e.g., nabi scan --docs nats) or a path (e.g., nabi scan --docs ~/path)");
     }
 
     if tags.is_some() || confidence.is_some() {
@@ -3638,20 +3644,24 @@ fn handle_scan_all() -> Result<()> {
     Ok(())
 }
 
-fn handle_scan_docs(query: &str, type_filter: Option<Vec<ScanSourceType>>) -> Result<()> {
+fn handle_scan_docs(query: &str, type_filter: Option<Vec<ScanSourceType>>, path: Option<&str>) -> Result<()> {
     println!(
         "{}",
         format!("📚 Searching docs for: '{}'", query).cyan().bold()
     );
 
-    // Get docs directory
-    let home = std::env::var("HOME").context("Could not determine HOME directory")?;
-    let docs_dir = format!("{}/docs", home);
+    // Determine target directory: use provided path or default to ~/docs
+    let docs_dir = if let Some(p) = path {
+        expand_home(p)?.to_string_lossy().to_string()
+    } else {
+        let home = std::env::var("HOME").context("Could not determine HOME directory")?;
+        format!("{}/docs", home)
+    };
 
     // Verify docs directory exists
     if !std::path::Path::new(&docs_dir).exists() {
         anyhow::bail!(
-            "Documentation directory not found: {}. Expected ~/docs to exist.",
+            "Documentation directory not found: {}",
             docs_dir
         );
     }
@@ -3708,6 +3718,80 @@ fn handle_scan_docs(query: &str, type_filter: Option<Vec<ScanSourceType>>) -> Re
             )
             .yellow()
         );
+    }
+
+    Ok(())
+}
+
+fn handle_scan_path_with_types(path: &str, type_filter: Option<Vec<ScanSourceType>>) -> Result<()> {
+    // Expand tilde in path
+    let expanded_path = expand_home(path)?;
+
+    // Verify path exists
+    if !expanded_path.exists() {
+        anyhow::bail!("Path not found: {}", path);
+    }
+
+    println!(
+        "{}",
+        format!("📚 Scanning {} for matching files", expanded_path.display()).cyan().bold()
+    );
+
+    // Build find command
+    let mut cmd = std::process::Command::new("find");
+    cmd.arg("-P") // Don't follow symlinks
+        .arg(&expanded_path)
+        .arg("-type")
+        .arg("f");
+
+    // Apply type filtering if specified
+    if let Some(types) = type_filter {
+        if !types.is_empty() {
+            // Build -name pattern: -name "*.md" -o -name "*.txt" etc.
+            let mut name_args: Vec<String> = Vec::new();
+            for (i, ext) in types.iter().enumerate() {
+                if i > 0 {
+                    name_args.push("-o".to_string());
+                }
+                name_args.push("-name".to_string());
+                name_args.push(format!("*.{}", ext.as_extension()));
+            }
+            // Convert Vec<String> to Vec<&str> for args()
+            let name_args_refs: Vec<&str> = name_args.iter().map(|s| s.as_str()).collect();
+            cmd.arg("(").args(&name_args_refs).arg(")");
+        }
+    }
+
+    // Exclude common unwanted directories and files
+    cmd.args(&[
+        "!", "-path", "*/.git/*",
+        "!", "-path", "*/__pycache__/*",
+        "!", "-path", "*/node_modules/*",
+        "!", "-path", "*/target/*",
+        "!", "-name", "*.pyc",
+        "!", "-name", ".DS_Store",
+    ]);
+
+    println!();
+
+    // Execute find
+    let output = cmd
+        .output()
+        .context("Failed to execute find command")?;
+
+    // Print stdout
+    if !output.stdout.is_empty() {
+        print!("{}", String::from_utf8_lossy(&output.stdout));
+    } else {
+        println!(
+            "{}",
+            format!("No matching files found in {}", expanded_path.display()).yellow()
+        );
+    }
+
+    // Print stderr if present (but don't fail on it)
+    if !output.stderr.is_empty() {
+        eprintln!("{}", String::from_utf8_lossy(&output.stderr));
     }
 
     Ok(())
