@@ -2158,6 +2158,26 @@ fn handle_tool(command: ToolCommands) -> Result<()> {
 }
 
 fn handle_tool_exec(tool_id: &str, args: Vec<String>) -> Result<()> {
+    // EXECUTION ABSTRACTION: Check if tool is promoted
+    // If promoted, execute from deployed location instead of source
+    if commands::promote::is_tool_promoted(tool_id) {
+        use colored::*;
+
+        println!("{} Using promoted artifact", "→".green());
+
+        let status = commands::promote::execute_promoted_tool(tool_id, &args)
+            .with_context(|| format!("Failed to execute promoted tool '{}'", tool_id))?;
+
+        if !status.success() {
+            std::process::exit(status.code().unwrap_or(1));
+        }
+
+        return Ok(());
+    }
+
+    // FALLBACK: Execute from source location (legacy path)
+    println!("{} Tool not promoted, executing from source", "→".yellow());
+
     // 1. Load tool manifest from ~/.config/nabi/tools/{tool_id}.toml
     let manifest_path = NabiPaths::config_dir()?.join("tools").join(format!("{}.toml", tool_id));
 

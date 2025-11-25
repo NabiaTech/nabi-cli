@@ -12,10 +12,14 @@ use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use toml;
 
+mod executor;
 mod record;
 mod validation;
 
-pub use record::{PromotionRecord, write_promotion_record};
+pub use executor::{
+    execute_promoted_tool, get_promoted_executable, get_promotion_record, is_tool_promoted,
+};
+pub use record::{write_promotion_record, PromotionRecord};
 pub use validation::validate_promotion_config;
 
 /// Promotion modes supported by the system
