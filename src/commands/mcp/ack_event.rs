@@ -7,6 +7,7 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
+use crate::paths::NabiPaths;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct EventAcknowledgment {
@@ -34,9 +35,7 @@ pub struct AckEventOutput {
 /// Get node ID from config or hostname
 fn get_node_id() -> Result<String> {
     // Try federation config first
-    let config_path = dirs::config_dir()
-        .context("Could not determine config directory")?
-        .join("nabi")
+    let config_path = NabiPaths::config_dir()?
         .join("federation.toml");
 
     if config_path.exists() {
