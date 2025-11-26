@@ -7,6 +7,7 @@ use serde::Serialize;
 use std::fs::{self, OpenOptions};
 use std::io::Write as IoWrite;
 use std::path::PathBuf;
+use crate::paths::NabiPaths;
 
 /// Get event store path (JSONL file for all events)
 /// Uses XDG_DATA_HOME/nabi/events for cross-language compatibility
@@ -20,13 +21,7 @@ pub fn get_event_store_path() -> Result<PathBuf> {
 
 /// Get kernel event queue path for federation
 pub fn get_kernel_queue_path() -> Result<PathBuf> {
-    let state_dir = std::env::var("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .or_else(|_| {
-            dirs::state_dir().ok_or_else(|| anyhow::anyhow!("no state dir"))
-        })
-        .context("Could not determine state directory")?
-        .join("nabi")
+    let state_dir = NabiPaths::state_dir()?
         .join("kernel");
     fs::create_dir_all(&state_dir)?;
     Ok(state_dir.join("event-queue.jsonl"))
@@ -35,13 +30,7 @@ pub fn get_kernel_queue_path() -> Result<PathBuf> {
 /// Get DLQ (Dead Letter Queue) path for failed federation attempts
 pub fn get_dlq_path(prefix: &str) -> Result<PathBuf> {
     let timestamp = Utc::now().format("%Y%m%d_%H%M%S");
-    let state_dir = std::env::var("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .or_else(|_| {
-            dirs::state_dir().ok_or_else(|| anyhow::anyhow!("no state dir"))
-        })
-        .context("Could not determine state directory")?
-        .join("nabi")
+    let state_dir = NabiPaths::state_dir()?
         .join("dlq");
     fs::create_dir_all(&state_dir)?;
     Ok(state_dir.join(format!("{}-{}.jsonl", prefix, timestamp)))
@@ -49,13 +38,7 @@ pub fn get_dlq_path(prefix: &str) -> Result<PathBuf> {
 
 /// Get signal file path for agent task dispatch
 pub fn get_signal_path(agent: &str, task_id: &str) -> Result<PathBuf> {
-    let state_dir = std::env::var("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .or_else(|_| {
-            dirs::state_dir().ok_or_else(|| anyhow::anyhow!("no state dir"))
-        })
-        .context("Could not determine state directory")?
-        .join("nabi")
+    let state_dir = NabiPaths::state_dir()?
         .join("signals");
     fs::create_dir_all(&state_dir)?;
     Ok(state_dir.join(format!("task-{}-{}.signal", agent, task_id)))
@@ -63,13 +46,7 @@ pub fn get_signal_path(agent: &str, task_id: &str) -> Result<PathBuf> {
 
 /// Get acknowledgment file path for event
 pub fn get_ack_path(event_id: &str) -> Result<PathBuf> {
-    let state_dir = std::env::var("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .or_else(|_| {
-            dirs::state_dir().ok_or_else(|| anyhow::anyhow!("no state dir"))
-        })
-        .context("Could not determine state directory")?
-        .join("nabi")
+    let state_dir = NabiPaths::state_dir()?
         .join("acks");
     fs::create_dir_all(&state_dir)?;
     Ok(state_dir.join(format!("{}.json", event_id)))
@@ -145,18 +122,7 @@ pub fn queue_event_to_kernel<T: Serialize>(event: &T) -> Result<()> {
 /// Load federation event source registry from TOML
 /// Returns (registry_version, approved_sources)
 pub fn load_event_source_registry() -> Result<(String, Vec<String>)> {
-    // Use XDG_CONFIG_HOME if set, otherwise follow XDG standard (~/.config)
-    let config_base = match std::env::var("XDG_CONFIG_HOME") {
-        Ok(path) => PathBuf::from(path),
-        Err(_) => {
-            let home = std::env::var("HOME")
-                .context("Could not determine HOME directory")?;
-            PathBuf::from(home).join(".config")
-        }
-    };
-
-    let registry_path = config_base
-        .join("nabi")
+    let registry_path = NabiPaths::config_dir()?
         .join("schemas")
         .join("federation-event-sources.toml");
 

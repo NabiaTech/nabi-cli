@@ -5,6 +5,7 @@ pub mod kernel;
 pub mod mcp;
 pub mod orgtime;
 pub mod port;
+pub mod promote;
 pub mod services;
 pub mod tmux;
 pub mod transform;

@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use uuid::Uuid;
 
+use crate::paths::NabiPaths;
+
 /// Federation event with optional vector clock
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct FederationEvent {
@@ -138,9 +140,7 @@ fn get_node_id() -> Result<String> {
     }
 
     // 2. Try state file
-    let state_path = dirs::data_local_dir()
-        .context("Could not determine local data directory")?
-        .join("nabi")
+    let state_path = NabiPaths::data_dir()?
         .join("node_id.txt");
 
     if state_path.exists() {
@@ -174,9 +174,7 @@ fn get_session_id() -> Result<String> {
 
 /// Load event from per-file storage
 fn load_event(event_id: &str) -> Result<FederationEvent> {
-    let state_base = dirs::data_local_dir()
-        .context("Could not determine local data directory")?
-        .join("nabi")
+    let state_base = NabiPaths::data_dir()?
         .join("events");
 
     // Search recent date directories (today through 7 days ago)
@@ -282,10 +280,8 @@ pub fn load_acknowledgment_log(event_id: &str) -> Result<Vec<Acknowledgment>> {
 
 /// Get acknowledgment log path for an event
 fn get_ack_log_path(event_id: &str) -> Result<PathBuf> {
-    // Use data_local_dir for consistency across platforms
-    let state_base = dirs::data_local_dir()
-        .context("Could not determine data directory")?
-        .join("nabi")
+    // Use NabiPaths for XDG-compliant path resolution
+    let state_base = NabiPaths::data_dir()?
         .join("events");
 
     // Try to find event file in recent date directories

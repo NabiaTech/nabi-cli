@@ -1553,6 +1553,17 @@ enum ToolCommands {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    /// Promote a tool to production (deploy artifacts from source)
+    Promote {
+        /// Tool ID to promote (e.g., 'cursorignore', 'claude-manager')
+        tool_id: String,
+        /// Override version from TOML config
+        #[arg(long)]
+        version: Option<String>,
+        /// Override promotion mode (LIVE, STABLE, INSTALL)
+        #[arg(long, value_parser = parse_promotion_mode)]
+        mode: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -2110,6 +2121,23 @@ fn handle_validate(command: ValidateCommands) -> Result<()> {
     }
 }
 
+fn parse_promotion_mode(s: &str) -> Result<String, String> {
+    let upper = s.to_uppercase();
+    match upper.as_str() {
+        "LIVE" | "STABLE" | "INSTALL" => Ok(upper),
+        _ => Err(format!("Invalid promotion mode: '{}'. Valid modes: LIVE, STABLE, INSTALL", s))
+    }
+}
+
+fn parse_promotion_mode_internal(s: &str) -> Result<commands::promote::PromotionMode> {
+    match s.to_uppercase().as_str() {
+        "LIVE" => Ok(commands::promote::PromotionMode::Live),
+        "STABLE" => Ok(commands::promote::PromotionMode::Stable),
+        "INSTALL" => Ok(commands::promote::PromotionMode::Install),
+        _ => Err(anyhow::anyhow!("Invalid promotion mode: {}", s))
+    }
+}
+
 fn handle_tool(command: ToolCommands) -> Result<()> {
     match command {
         ToolCommands::Register(args) => register_tool(args),
@@ -2119,10 +2147,37 @@ fn handle_tool(command: ToolCommands) -> Result<()> {
             runtime,
         } => list_tools(&format, status.as_deref(), runtime.as_deref()),
         ToolCommands::Exec { tool, args } => handle_tool_exec(&tool, args),
+        ToolCommands::Promote { tool_id, version, mode } => {
+            let mode_parsed = mode.as_ref()
+                .map(|m| parse_promotion_mode_internal(m))
+                .transpose()?;
+            commands::promote::promote_tool(&tool_id, version.as_deref(), mode_parsed)?;
+            Ok(())
+        }
     }
 }
 
 fn handle_tool_exec(tool_id: &str, args: Vec<String>) -> Result<()> {
+    // EXECUTION ABSTRACTION: Check if tool is promoted
+    // If promoted, execute from deployed location instead of source
+    if commands::promote::is_tool_promoted(tool_id) {
+        use colored::*;
+
+        println!("{} Using promoted artifact", "→".green());
+
+        let status = commands::promote::execute_promoted_tool(tool_id, &args)
+            .with_context(|| format!("Failed to execute promoted tool '{}'", tool_id))?;
+
+        if !status.success() {
+            std::process::exit(status.code().unwrap_or(1));
+        }
+
+        return Ok(());
+    }
+
+    // FALLBACK: Execute from source location (legacy path)
+    println!("{} Tool not promoted, executing from source", "→".yellow());
+
     // 1. Load tool manifest from ~/.config/nabi/tools/{tool_id}.toml
     let manifest_path = NabiPaths::config_dir()?.join("tools").join(format!("{}.toml", tool_id));
 
