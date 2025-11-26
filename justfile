@@ -115,30 +115,43 @@ default:
     set -e
     XDG_DATA="${XDG_DATA_HOME:-$HOME/.local/share}"
     BINARY="${XDG_DATA}/nabi/bin/release/nabi"
-    ZSH_COMP_DIR="$HOME/.zsh/completions"
+
+    # Platform-specific configuration
+    OS=$(uname -s)
+    if [ "$OS" = "Darwin" ]; then
+        ZSH_COMP_DIR="$HOME/.zsh/completions"
+        SED_I="sed -i ''"
+    else
+        ZSH_COMP_DIR="$HOME/.local/share/zsh/completions"
+        SED_I="sed -i"
+    fi
     ZSH_COMP_FILE="${ZSH_COMP_DIR}/_nabi"
 
     mkdir -p "${ZSH_COMP_DIR}" .build
     "${BINARY}" completions zsh > .build/_nabi_static
-    
+
     # Post-process: Replace : or :_default with specific completion functions
     # This is the unified strategy - no overriding _nabi, just define specific functions
     echo "🔧 Post-processing completion file to add dynamic completion functions..."
-    
+
     # 1. Replace pane argument for send-prompt (no completion function, just :)
     # Match: '::pane -- ...:' and add completion function
-    sed -i '' "s/'::pane -- \(.*\):'/'::pane -- \1:_nabi__tmux__send_prompt_pane'/" .build/_nabi_static
-    
+    $SED_I "s/'::pane -- \(.*\):'/'::pane -- \1:_nabi__tmux__send_prompt_pane'/" .build/_nabi_static
+
     # 2. Replace service argument for port shift
-    sed -i '' 's/:service -- Service name to migrate:_default/:service -- Service name to migrate:_nabi__port__shift_service/' .build/_nabi_static
-    
+    $SED_I 's/:service -- Service name to migrate:_default/:service -- Service name to migrate:_nabi__port__shift_service/' .build/_nabi_static
+
     # 3 & 4. Replace tool arguments for both nabi exec and nabi tool exec
     # Use Python script to properly track tool section vs top-level exec
     python3 scripts/post-process-completions.py .build/_nabi_static
-    
+
     # 5. Replace event_id argument for events ack
-    sed -i '' 's/:event_id -- Event ID to acknowledge:_default/:event_id -- Event ID to acknowledge:_nabi__events__ack_event_id/' .build/_nabi_static
-    
+    $SED_I 's/:event_id -- Event ID to acknowledge:_default/:event_id -- Event ID to acknowledge:_nabi__events__ack_event_id/' .build/_nabi_static
+
+    # 6. Remove redundant compdef call (clap-generated code that causes issues)
+    # The #compdef directive at the top already registers the completion
+    $SED_I '/^if \[ "\$funcstack\[1\]" = "_nabi" \]/,/^fi$/d' .build/_nabi_static
+
     cp .build/_nabi_static "${ZSH_COMP_FILE}"
     echo '' >> "${ZSH_COMP_FILE}"
     echo '# Dynamic tmux completion enhancements (injected at build time)' >> "${ZSH_COMP_FILE}"
@@ -148,6 +161,12 @@ default:
     echo "🔍 Validating completion composition..."
     bash scripts/validate-completions.sh --verbose || { echo "❌ Completion validation failed!"; exit 1; }
     echo "✅ Completion composition validated"
+
+    # Clear zsh completion cache so new completions are picked up
+    echo "🗑️  Clearing zsh completion cache..."
+    rm -f ~/.cache/zsh/.zcompdump* 2>/dev/null || true
+    rm -f ~/.zcompdump* 2>/dev/null || true
+    echo "✅ Cache cleared (completions will rebuild on next shell start)"
 
 # Install to ~/.local/share/nabi/bin (binary already built there, just symlink)
 @install: completions sign
