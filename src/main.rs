@@ -3699,6 +3699,202 @@ fn handle_scan_all() -> Result<()> {
     Ok(())
 }
 
+/// Locate the intent enhancer Python script
+///
+/// Search order:
+/// 1. ~/.local/share/nabi/bin/intent_enhancer (installed location)
+/// 2. ~/nabia/tools/riff-cli/src/integration/enhance_cli.py (development)
+fn locate_intent_enhancer() -> Result<PathBuf> {
+    let home = std::env::var("HOME").context("Could not determine HOME directory")?;
+
+    // Try installed location first
+    let installed_path = PathBuf::from(format!("{}/.local/share/nabi/bin/intent_enhancer", home));
+    if installed_path.exists() {
+        return Ok(installed_path);
+    }
+
+    // Fallback to development location
+    let dev_path = PathBuf::from(format!(
+        "{}/nabia/tools/riff-cli/src/integration/enhance_cli.py",
+        home
+    ));
+    if dev_path.exists() {
+        return Ok(dev_path);
+    }
+
+    anyhow::bail!(
+        "Intent enhancer not found. Tried:\n  - {}\n  - {}",
+        installed_path.display(),
+        dev_path.display()
+    )
+}
+
+/// JSON request structure for intent enhancer
+#[derive(Serialize)]
+struct EnhanceRequest {
+    query: String,
+    context: String,
+}
+
+/// JSON response structure from intent enhancer
+#[derive(Deserialize)]
+struct EnhanceResponse {
+    enhanced_keywords: Vec<String>,
+    original_query: String,
+    #[serde(default)]
+    keyword_count: usize,
+}
+
+/// Enhance query via Python intent enhancer subprocess
+///
+/// This function spawns the Python intent enhancer as a subprocess, sends
+/// the query via JSON over stdin, and reads enhanced keywords from stdout.
+///
+/// Returns:
+/// - Ok(Some(enhanced_query)) if enhancement succeeded
+/// - Ok(None) if enhancer not available or failed (graceful fallback)
+/// - Err only for critical failures
+fn enhance_query_via_python(query: &str) -> Result<Option<String>> {
+    // Check if NABI_DEBUG is set for verbose output
+    let debug = std::env::var("NABI_DEBUG").is_ok();
+
+    // Locate the intent enhancer script
+    let enhancer_path = match locate_intent_enhancer() {
+        Ok(path) => path,
+        Err(e) => {
+            if debug {
+                eprintln!("Debug: Intent enhancer not found: {}", e);
+            }
+            return Ok(None); // Graceful fallback
+        }
+    };
+
+    if debug {
+        eprintln!("Debug: Using intent enhancer at: {}", enhancer_path.display());
+    }
+
+    // Build request JSON
+    let request = EnhanceRequest {
+        query: query.to_string(),
+        context: "docs".to_string(),
+    };
+    let request_json = serde_json::to_string(&request)
+        .context("Failed to serialize enhance request")?;
+
+    // Spawn Python subprocess with timeout
+    let mut child = std::process::Command::new("python3")
+        .arg(&enhancer_path)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .context("Failed to spawn intent enhancer subprocess")?;
+
+    // Write request to stdin
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(request_json.as_bytes())
+            .context("Failed to write to enhancer stdin")?;
+    }
+
+    // Wait for completion with timeout (2 seconds)
+    let output = match wait_with_timeout(child, std::time::Duration::from_secs(2)) {
+        Ok(output) => output,
+        Err(e) => {
+            if debug {
+                eprintln!("Debug: Intent enhancer timeout or error: {}", e);
+            }
+            return Ok(None); // Graceful fallback
+        }
+    };
+
+    // Check exit status
+    if !output.status.success() {
+        if debug {
+            eprintln!("Debug: Intent enhancer failed with status: {:?}", output.status);
+            if !output.stderr.is_empty() {
+                eprintln!("Debug: stderr: {}", String::from_utf8_lossy(&output.stderr));
+            }
+        }
+        return Ok(None); // Graceful fallback
+    }
+
+    // Parse response JSON
+    let response: EnhanceResponse = match serde_json::from_slice(&output.stdout) {
+        Ok(r) => r,
+        Err(e) => {
+            if debug {
+                eprintln!("Debug: Failed to parse enhancer response: {}", e);
+                eprintln!("Debug: stdout: {}", String::from_utf8_lossy(&output.stdout));
+            }
+            return Ok(None); // Graceful fallback
+        }
+    };
+
+    if debug {
+        eprintln!("Debug: Enhanced {} -> {} keywords", query, response.keyword_count);
+        eprintln!("Debug: Keywords: {:?}", response.enhanced_keywords);
+    }
+
+    // Build enhanced ripgrep pattern: (word1|word2|word3)
+    if response.enhanced_keywords.is_empty() {
+        return Ok(None);
+    }
+
+    let enhanced_pattern = format!("({})", response.enhanced_keywords.join("|"));
+
+    if debug {
+        eprintln!("Debug: Enhanced pattern: {}", enhanced_pattern);
+    }
+
+    Ok(Some(enhanced_pattern))
+}
+
+/// Wait for child process with timeout
+///
+/// This is a simple timeout implementation that polls the child process.
+/// For production use, consider using tokio::time::timeout with async.
+fn wait_with_timeout(
+    mut child: std::process::Child,
+    timeout: std::time::Duration,
+) -> Result<std::process::Output> {
+    let start = std::time::Instant::now();
+    let poll_interval = std::time::Duration::from_millis(50);
+
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                // Process completed
+                let stdout = {
+                    let mut buf = Vec::new();
+                    if let Some(mut out) = child.stdout.take() {
+                        out.read_to_end(&mut buf)?;
+                    }
+                    buf
+                };
+                let stderr = {
+                    let mut buf = Vec::new();
+                    if let Some(mut err) = child.stderr.take() {
+                        err.read_to_end(&mut buf)?;
+                    }
+                    buf
+                };
+                return Ok(std::process::Output { status, stdout, stderr });
+            }
+            Ok(None) => {
+                // Process still running
+                if start.elapsed() > timeout {
+                    child.kill()?;
+                    anyhow::bail!("Process timed out after {:?}", timeout);
+                }
+                std::thread::sleep(poll_interval);
+            }
+            Err(e) => {
+                return Err(e.into());
+            }
+        }
+    }
+}
+
 fn handle_scan_docs(query: &str, type_filter: Option<Vec<ScanSourceType>>, path: Option<&str>) -> Result<()> {
     println!(
         "{}",
@@ -3721,6 +3917,29 @@ fn handle_scan_docs(query: &str, type_filter: Option<Vec<ScanSourceType>>, path:
         );
     }
 
+    // Enhance query via Python intent enhancer (graceful fallback on failure)
+    let search_pattern = match enhance_query_via_python(query) {
+        Ok(Some(enhanced)) => {
+            // Debug output for enhanced queries
+            if std::env::var("NABI_DEBUG").is_ok() {
+                eprintln!("Debug: Using enhanced pattern");
+            }
+            enhanced
+        }
+        Ok(None) => {
+            // Enhancement not available or failed - use original query
+            if std::env::var("NABI_DEBUG").is_ok() {
+                eprintln!("Debug: Using original query (enhancement unavailable)");
+            }
+            query.to_string()
+        }
+        Err(e) => {
+            // Critical error in enhancement - warn but continue
+            eprintln!("Warning: Query enhancement failed: {}", e);
+            query.to_string()
+        }
+    };
+
     // Build ripgrep command
     let mut cmd = std::process::Command::new("rg");
 
@@ -3738,8 +3957,8 @@ fn handle_scan_docs(query: &str, type_filter: Option<Vec<ScanSourceType>>, path:
         }
     }
 
-    // Add search query and target directory
-    cmd.arg(query).arg(&docs_dir);
+    // Add search pattern (enhanced or original) and target directory
+    cmd.arg(&search_pattern).arg(&docs_dir);
 
     println!();
 
