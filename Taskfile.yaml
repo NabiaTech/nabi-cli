@@ -1,5 +1,13 @@
 version: '3'
 
+# Federation Build Observability - P0 Prevention
+# See: ~/.config/nabi/taskfile/observability.toml
+
+includes:
+  obs:
+    taskfile: ~/.config/nabi/taskfile/instrumentation.yaml
+    optional: true
+
 tasks:
   # XDG Path Resolution Regression Tests
   test:xdg:rust:
@@ -51,15 +59,17 @@ tasks:
 
   build:
     desc: Build nabi-cli
+    deps: [obs:preflight]
     cmds:
       - cargo build --release
 
   install:
     desc: Install nabi binary to ~/.local/bin
+    deps: [obs:preflight]
     cmds:
       - cargo build --release
       - cp target/release/nabi ~/.local/bin/nabi
-      - echo "✓ Installed nabi to ~/.local/bin/nabi"
+      - echo "Installed nabi to ~/.local/bin/nabi"
 
   test:
     desc: Run all tests

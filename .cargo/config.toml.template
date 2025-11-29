@@ -1,9 +1,10 @@
 [build]
 # XDG-compliant build artifact location
-# Binary lands directly in nabi data/bin (backed up, on PATH)
-# Intermediate artifacts stay in release/ and deps/ subdirs
+# Build artifacts go to cache (disposable), binary is COPIED to data/bin after build
+# DO NOT set target-dir to ~/.local/share/nabi/bin - that destroys the bin directory!
+# Use: cargo build --release && cp target/release/nabi ~/.local/share/nabi/bin/
 # Run: just config (generates .cargo/config.toml from this template)
-target-dir = "$XDG_DATA_HOME/nabi/bin"
+target-dir = "$XDG_CACHE_HOME/nabi/nabi-cli/target"
 
 [target.x86_64-apple-darwin]
 rustflags = ["-C", "link-arg=-undefined", "-C", "link-arg=dynamic_lookup"]
