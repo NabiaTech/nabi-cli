@@ -106,6 +106,9 @@ pub enum Commands {
         /// Filter by file type(s) (comma-separated extensions)
         #[arg(long, value_delimiter = ',', value_enum)]
         type_filter: Option<Vec<ScanSourceType>>,
+        /// Exact string matching (skip query enhancement)
+        #[arg(long, short = 'e')]
+        exact: bool,
         /// Search query for docs search
         #[arg(value_name = "QUERY", last = true)]
         query: Option<String>,

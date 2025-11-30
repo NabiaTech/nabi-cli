@@ -148,6 +148,9 @@ enum Commands {
         /// Filter by file type(s) (comma-separated extensions)
         #[arg(long, value_delimiter = ',', value_enum)]
         type_filter: Option<Vec<ScanSourceType>>,
+        /// Exact string matching (skip query enhancement)
+        #[arg(long, short = 'e')]
+        exact: bool,
         /// Search query for docs search
         #[arg(value_name = "QUERY", last = true)]
         query: Option<String>,
@@ -1733,8 +1736,9 @@ fn main() -> Result<()> {
             all,
             docs,
             type_filter,
+            exact,
             query,
-        } => handle_scan(path, tags, confidence, all, docs, type_filter, query),
+        } => handle_scan(path, tags, confidence, all, docs, type_filter, query, exact),
         Commands::Watch { command } => handlers::watch::handle_watch(command),
         Commands::Orgtime { path, category, files, preserve_times, dry_run } => {
             handle_orgtime(path, category, files, preserve_times, dry_run)
@@ -3540,6 +3544,7 @@ fn handle_scan(
     docs: bool,
     type_filter: Option<Vec<ScanSourceType>>,
     query: Option<String>,
+    exact: bool,
 ) -> Result<()> {
     // If --all flag is set, run tree scan of federation directories
     if all {
@@ -3551,7 +3556,7 @@ fn handle_scan(
         let doc_filters = type_filter.clone();
         // If query is provided, use ripgrep search
         if let Some(q) = query {
-            return handle_scan_docs(&q, doc_filters, path.as_deref());
+            return handle_scan_docs(&q, doc_filters, path.as_deref(), exact);
         }
         // If path is provided (with or without type filter), scan path for matching files
         if let Some(p) = &path {
@@ -3895,7 +3900,7 @@ fn wait_with_timeout(
     }
 }
 
-fn handle_scan_docs(query: &str, type_filter: Option<Vec<ScanSourceType>>, path: Option<&str>) -> Result<()> {
+fn handle_scan_docs(query: &str, type_filter: Option<Vec<ScanSourceType>>, path: Option<&str>, exact: bool) -> Result<()> {
     println!(
         "{}",
         format!("📚 Searching docs for: '{}'", query).cyan().bold()
@@ -3917,26 +3922,31 @@ fn handle_scan_docs(query: &str, type_filter: Option<Vec<ScanSourceType>>, path:
         );
     }
 
-    // Enhance query via Python intent enhancer (graceful fallback on failure)
-    let search_pattern = match enhance_query_via_python(query) {
-        Ok(Some(enhanced)) => {
-            // Debug output for enhanced queries
-            if std::env::var("NABI_DEBUG").is_ok() {
-                eprintln!("Debug: Using enhanced pattern");
+    // Skip enhancement if --exact flag is set
+    let search_pattern = if exact {
+        query.to_string()
+    } else {
+        // Enhance query via Python intent enhancer (graceful fallback on failure)
+        match enhance_query_via_python(query) {
+            Ok(Some(enhanced)) => {
+                // Debug output for enhanced queries
+                if std::env::var("NABI_DEBUG").is_ok() {
+                    eprintln!("Debug: Using enhanced pattern");
+                }
+                enhanced
             }
-            enhanced
-        }
-        Ok(None) => {
-            // Enhancement not available or failed - use original query
-            if std::env::var("NABI_DEBUG").is_ok() {
-                eprintln!("Debug: Using original query (enhancement unavailable)");
+            Ok(None) => {
+                // Enhancement not available or failed - use original query
+                if std::env::var("NABI_DEBUG").is_ok() {
+                    eprintln!("Debug: Using original query (enhancement unavailable)");
+                }
+                query.to_string()
             }
-            query.to_string()
-        }
-        Err(e) => {
-            // Critical error in enhancement - warn but continue
-            eprintln!("Warning: Query enhancement failed: {}", e);
-            query.to_string()
+            Err(e) => {
+                // Critical error in enhancement - warn but continue
+                eprintln!("Warning: Query enhancement failed: {}", e);
+                query.to_string()
+            }
         }
     };
 
@@ -5152,17 +5162,6 @@ fn handle_mode(mode: Option<String>) -> Result<()> {
     Ok(())
 }
 
-fn handle_riff(args: Vec<String>) -> Result<()> {
-    // Layer 1 → Layer 2 handoff for riff-cli
-    // Route all riff commands to Python CLI layer
-    println!("{}", "🔍 Routing to riff-cli...".cyan().bold());
-
-    let mut python_args = vec!["riff"];
-    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    python_args.extend_from_slice(&arg_refs);
-
-    route_to_python_cli(&python_args)
-}
 
 fn handle_recover(command: RecoverCommands) -> Result<()> {
     match command {
