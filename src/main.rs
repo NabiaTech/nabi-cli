@@ -1757,7 +1757,7 @@ fn main() -> Result<()> {
         Commands::Mcp { command } => mcp::handle_mcp_commands(command),
         Commands::Hooks { command } => handle_hooks(command),
         Commands::Mode { mode } => handle_mode(mode),
-        Commands::Riff { args } => handle_riff(args),
+        Commands::Riff { args } => handlers::riff::handle_riff(args),
         Commands::Recover { command } => handle_recover(command),
         Commands::Health { command } => handle_health(command),
         Commands::Completions { shell, output, install } => handle_completions(shell, output, install),
